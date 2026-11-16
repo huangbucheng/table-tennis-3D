@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.verify-browser/
+.verify-*.png
+verify.mjs
+.preview-base
+.DS_Store

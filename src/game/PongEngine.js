@@ -1,0 +1,199 @@
+import { CONFIG } from './config.js'
+import { createScene, syncMeshes } from './scene.js'
+import { createTrail, createParticles } from './effects.js'
+import { createAudio } from './audio.js'
+import { createGameInput } from './gameInput.js'
+import { advancePointPause } from './pointPause.js'
+import { ServeClock } from './serveClock.js'
+import { createSessionState, sessionPayload, pointResult, frameHooks } from './session.js'
+import { advanceSimulation, createSimulation, prepareServe, serveSimulation } from './rally.js'
+import { MESSAGES, applyAiLevel } from './matchSettings.js'
+
+export class PongEngine {
+  constructor(container, callbacks = {}) {
+    this.callbacks = callbacks
+    this.container = container
+    this.failed = false
+    this.running = false
+    this.raf = 0
+
+    try {
+      this.view = createScene(container)
+    } catch {
+      this.failed = true
+      callbacks.onError?.(MESSAGES.webgl)
+      return
+    }
+
+    this.trail = createTrail(this.view.scene)
+    this.particles = createParticles(this.view.scene)
+    this.audio = createAudio()
+    this.input = createGameInput(window, container)
+    this.sim = createSimulation()
+    this.state = createSessionState()
+    this.serveClock = new ServeClock()
+    this.accumulator = this.pauseRemaining = this.lastTime = 0
+
+    this.onResize = () => this.view.resize()
+    window.addEventListener('resize', this.onResize)
+    this.resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(this.onResize)
+      : null
+    this.resizeObserver?.observe(container)
+
+    syncMeshes(this.view, this.sim)
+    this.emit()
+    this.running = true
+    this.raf = requestAnimationFrame(this.frame)
+  }
+
+  frame = (now) => {
+    if (!this.running) return
+    this.raf = requestAnimationFrame(this.frame)
+    try {
+      const dt = this.lastTime ? Math.min((now - this.lastTime) / 1000, 0.1) : 0
+      this.lastTime = now
+      this.accumulator += dt
+      let steps = 0
+      while (this.accumulator >= CONFIG.fixedDt && steps < CONFIG.maxSubsteps) {
+        this.update(CONFIG.fixedDt)
+        this.accumulator -= CONFIG.fixedDt
+        steps += 1
+      }
+      if (steps === CONFIG.maxSubsteps) this.accumulator = 0
+      this.particles.update(dt)
+      this.view.arena?.step(dt)
+      this.trail.update()
+      syncMeshes(this.view, this.sim)
+      this.view.renderer.render(this.view.scene, this.view.camera)
+    } catch {
+      this.fail(MESSAGES.runtime)
+    }
+  }
+
+  update(dt) {
+    if (this.state.phase === 'serving') {
+      const pause = advancePointPause(this.pauseRemaining, dt)
+      this.pauseRemaining = pause.remaining
+      if (pause.expired) {
+        prepareServe(this.sim, this.state.server)
+        this.state.countdown = this.serveClock.reset()
+        this.emit()
+        return
+      }
+      if (this.pauseRemaining > 0) return
+      const tick = this.serveClock.tick(dt)
+      if (tick.expired) return this.serve()
+      if (!tick.changed) return
+      this.state.countdown = tick.count
+      this.emit()
+    }
+    if (this.state.phase !== 'playing') return
+
+    this.input.tick(dt)
+    const intent = this.input.intent()
+    const axes = this.input.axes(this.sim.playerPaddle)
+    const result = advanceSimulation(this.sim, dt, axes, frameHooks(this), intent)
+    if (result) this.award(result.foul.winner, result.foul.reason, result.position)
+  }
+
+  setTip(text) {
+    if (this.state.tip === text) return
+    this.state.tip = text
+    this.emit()
+  }
+
+  selectIntent(type) {
+    if (this.failed || !['none', 'drive', 'push'].includes(type)) return
+    this.state.pending = type
+    this.input.setPendingIntent(type)
+    this.emit()
+  }
+
+  serve() {
+    serveSimulation(this.sim, this.state.server)
+    this.trail.reset()
+    this.input.resetCharge()
+    this.state.phase = 'playing'
+    this.state.countdown = this.serveClock.clear()
+    this.state.tip = ''
+    this.state.message = `${this.state.server === 'player' ? '你' : '对手'}发球，准备接球`
+    this.pauseRemaining = 0
+    this.emit()
+  }
+
+  award(winner, reason, position) {
+    const { over, ...fields } = pointResult(this.state, winner, reason)
+    Object.assign(this.state, fields)
+    this.input.clearPending()
+    this.state.phase = over ? 'gameover' : 'serving'
+    this.state.countdown = this.serveClock.clear()
+    if (over) this.state.winner = winner
+    this.audio.play('point')
+    this.particles.burst(position.x, Math.max(position.y, 0.8), position.z)
+    this.trail.reset()
+    this.pauseRemaining = over ? 0 : CONFIG.rules.pointPause
+    if (over) prepareServe(this.sim, this.state.server)
+    this.emit()
+  }
+
+  emit() { const p = sessionPayload(this.state); this.view?.arena?.onState(p); this.callbacks.onState?.(p) }
+
+  fail(message) {
+    this.running = false
+    cancelAnimationFrame(this.raf)
+    this.callbacks.onError?.(message)
+  }
+
+  start() {
+    if (this.failed) return
+    this.audio.unlock()
+    this.state.muted = this.audio.isMuted()
+    this.restart()
+  }
+
+  restart() {
+    if (this.failed) return
+    this.state.scores = { player: 0, ai: 0 }
+    this.state.server = 'player'
+    this.state.winner = null
+    this.state.phase = 'serving'
+    this.state.message = '新的一局开始，准备发球'
+    this.state.countdown = this.serveClock.reset()
+    this.state.tip = ''
+    this.state.pending = 'none'
+    this.pauseRemaining = 0
+    prepareServe(this.sim, 'player')
+    this.accumulator = 0
+    this.input.clear()
+    this.trail.reset()
+    this.particles.reset()
+    syncMeshes(this.view, this.sim)
+    this.emit()
+    if (!this.running) {
+      this.running = true
+      this.lastTime = 0
+      this.raf = requestAnimationFrame(this.frame)
+    }
+  }
+
+  toggleMuted() {
+    if (this.failed) return
+    this.state.muted = this.audio.setMuted(!this.audio.isMuted())
+    this.emit()
+  }
+
+  setAiLevel(level) {
+    if (this.failed) return null
+    return applyAiLevel(this.sim, level)
+  }
+
+  dispose() {
+    this.running = false
+    cancelAnimationFrame(this.raf)
+    if (this.onResize) window.removeEventListener('resize', this.onResize)
+    this.resizeObserver?.disconnect()
+    const parts = [this.input, this.audio, this.trail, this.particles, this.view]
+    for (const part of parts) part?.dispose()
+  }
+}
