@@ -2,6 +2,9 @@ import * as THREE from 'three'
 import { COLORS, CONFIG } from './config.js'
 import { buildPaddle, buildTable } from './models.js'
 import { createArena } from './arena.js'
+import { VISUAL, tagMaps } from './visual.js'
+import { createGeneratedMaps } from './generatedMaps.js'
+import { createEnvironment, createProceduralMaps } from './proceduralMaps.js'
 
 function disposeTree(root) {
   root.traverse((child) => {
@@ -9,6 +12,21 @@ function disposeTree(root) {
     if (child.material) {
       const materials = Array.isArray(child.material) ? child.material : [child.material]
       materials.forEach((material) => material.dispose())
+    }
+  })
+}
+
+// 环境反射只给金属件：全局 scene.environment 会让每个 PBR 片元都采样 PMREM，
+// 在软件渲染下代价极高，而 WTT 质感只需要金属立柱 / 网柱 / 桌腿吃到冷光反射。
+function applyEnvironment(scene, texture) {
+  scene.traverse((child) => {
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : child.material ? [child.material] : []
+    for (const material of materials) {
+      if (!material.isMeshStandardMaterial) continue
+      material.envMapIntensity = VISUAL.env.intensity
+      if (texture && material.metalness >= 0.5) material.envMap = texture
     }
   })
 }
@@ -34,9 +52,18 @@ export function createScene(container) {
   renderer.domElement.style.height = '100%'
   container.appendChild(renderer.domElement)
 
+  // 程序化贴图同步可用；三张生成图异步加载，未就绪前材质保持深色纯色占位。
+  const procedural = createProceduralMaps()
+  const generated = createGeneratedMaps(renderer)
+  const maps = { ...procedural.maps, ...generated.maps }
+  const environment = createEnvironment(renderer, maps.equirect)
+
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(30, 30),
-    new THREE.MeshStandardMaterial({ color: COLORS.floor, roughness: 1 }),
+    tagMaps(new THREE.MeshStandardMaterial({
+      color: COLORS.floor, roughness: VISUAL.material.floor.roughness,
+      metalness: VISUAL.material.floor.metalness, roughnessMap: maps.micro,
+    }), { map: 'floor' }),
   )
   floor.rotation.x = -Math.PI / 2
   floor.receiveShadow = true
@@ -63,31 +90,43 @@ export function createScene(container) {
   fillLight.position.set(-2.5, 2, -2)
   scene.add(fillLight)
 
-  scene.add(buildTable())
+  scene.add(buildTable(maps))
 
-  const playerPaddle = buildPaddle(COLORS.playerBlade, COLORS.playerRim)
+  const playerPaddle = buildPaddle(COLORS.playerBlade, COLORS.playerRim, maps)
   playerPaddle.position.set(0, 0.98, CONFIG.paddle.playerZ)
   scene.add(playerPaddle)
 
-  const aiPaddle = buildPaddle(COLORS.aiBlade, COLORS.aiRim)
+  const aiPaddle = buildPaddle(COLORS.aiBlade, COLORS.aiRim, maps)
   aiPaddle.position.set(0, 0.98, CONFIG.paddle.aiZ)
   aiPaddle.rotation.y = Math.PI
   scene.add(aiPaddle)
 
   const ball = new THREE.Mesh(
-    new THREE.SphereGeometry(CONFIG.ball.radius, 18, 12),
+    new THREE.SphereGeometry(CONFIG.ball.radius, 28, 20),
     new THREE.MeshStandardMaterial({
-      color: COLORS.ball,
-      roughness: 0.35,
-      emissive: 0x4a4a42,
-      emissiveIntensity: 0.2,
+      color: COLORS.ball, map: maps.ballStripe,
+      roughness: VISUAL.material.ball.roughness,
+      metalness: VISUAL.material.ball.metalness,
+      emissive: 0x4a4a42, emissiveIntensity: 0.2,
     }),
   )
   ball.castShadow = true
   ball.position.set(0, CONFIG.ball.serveY, CONFIG.ball.serveZ)
   scene.add(ball)
 
-  const arena = createArena(scene, { ambient, key: keyLight, fill: fillLight })
+  // 柔和接触阴影：不进 shadow map、不吃光源，只跟随球的 x/z 并随高度淡出。
+  const contact = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: maps.contact, transparent: true, opacity: VISUAL.shadow.opacity,
+    depthWrite: false, toneMapped: false,
+  }))
+  contact.scale.setScalar(VISUAL.shadow.size)
+  contact.position.set(0, CONFIG.table.height + 0.003, CONFIG.ball.serveZ)
+  ball.userData.contactShadow = contact
+  scene.add(contact)
+
+  const arena = createArena(scene, { ambient, key: keyLight, fill: fillLight }, maps)
+  applyEnvironment(scene, environment.texture)
+  generated.bind(scene)
 
   const resize = () => {
     const width = container.clientWidth
@@ -110,6 +149,9 @@ export function createScene(container) {
     resize,
     dispose() {
       disposeTree(scene)
+      environment.dispose()
+      generated.dispose()
+      procedural.dispose()
       arena.dispose()
       renderer.dispose()
       if (renderer.domElement.parentNode === container) {
@@ -119,10 +161,16 @@ export function createScene(container) {
   }
 }
 
-// 把纯状态映射到 mesh 位置，每帧由引擎调用。
+// 把纯状态映射到 mesh 位置，每帧由引擎调用；签名与返回形状保持不变。
 export function syncMeshes(view, sim) {
   if (!view) return
   view.ball.position.set(sim.ball.position.x, sim.ball.position.y, sim.ball.position.z)
   view.playerPaddle.position.set(sim.playerPaddle.x, sim.playerPaddle.y, sim.playerPaddle.z)
   view.aiPaddle.position.set(sim.aiPaddle.x, sim.aiPaddle.y, sim.aiPaddle.z)
+  const shadow = view.ball.userData?.contactShadow
+  if (!shadow) return
+  const height = Math.max(0, sim.ball.position.y - CONFIG.table.height)
+  shadow.position.set(sim.ball.position.x, CONFIG.table.height + 0.003, sim.ball.position.z)
+  shadow.scale.setScalar(VISUAL.shadow.size * (1 + Math.min(height, 1) * 0.7))
+  shadow.material.opacity = VISUAL.shadow.opacity * Math.max(0.15, 1 - height)
 }

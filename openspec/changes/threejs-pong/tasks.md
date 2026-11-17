@@ -1020,3 +1020,405 @@
 5. **一次并发抖动**：浏览器脚本与 `npm test` 并行执行时，桌面视口等待
    `phase === 'playing'` 12 秒超时；单独重跑同一脚本 **70/70 通过**，
    产品代码与验收标准均未改动，判为临时验收脚本的并发资源竞争。
+
+# 迭代 11：WTT 式高级赛场（建模 + 生成贴图）
+
+> 规格见 `proposal.md` 1532 行起。路线 B（建模 + 生成贴图）为用户已选。
+> 生图工具按 skill 的优先级：平台 `mcp__media__generate_image` → `ImageGen` → 程序化兜底；
+> **`WaitForMcpServers({servers:['media']})` → `ready: true`，平台工具为对话层直连工具**
+> （不在 deferred registry，故 `ToolSearch` 查不到它，属于工具登记机制差异不是不可用）。
+> 实际走首选链路生成 3 张，经 writer 脚本下载一次落盘，**未调用 `ImageGen`、0 积分**。
+
+## 实现
+
+- [x] T90 生成 3 张贴图：`led-board.png`(1536×1024) / `crowd-bokeh.png`(1024×1024) /
+      `court-floor.png`(1024×1024)，平台工具结果经
+      `generate_image_asset.mjs --out <相对路径>` **下载一次**写入
+      `src/assets/textures/`；逐张检查无文字 / logo / 可辨人脸 / 过亮色块，
+      三张合计 ≤8 MB。远程临时 URL 不进任何交付物。
+- [x] T91 `src/game/visual.js`：新增全部实际使用的视觉常量（roughness / metalness /
+      envMapIntensity / repeat / anisotropy / 光束、散景、阴影与暗角强度），
+      纯数据、不 import three、不访问 DOM；`config.js` 一字不改。
+      未保留「运行时降采样上限」等未使用常量（见偏差 D11）。
+- [x] T92 `src/game/generatedMaps.js`：`TextureLoader` 加载 3 张 PNG，
+      用 `new URL('../assets/textures/x.png', import.meta.url).href` 取 URL
+      （**Node 测试会 import 到 scene.js，不能用静态 `import '*.png'`**），
+      设 `SRGBColorSpace` / `RepeatWrapping` / 有上限 anisotropy；
+      加载前由 `tagMaps()` 保留材质深色纯色占位、onError 保留纯色并中文
+      `console.warn`；返回 `{ maps, bind(scene), dispose() }`，贴图就绪后按
+      `userData.pendingMaps` 绑定。顶层不创建 canvas / TextureLoader / Renderer。
+- [x] T93 `src/game/proceduralMaps.js`：CanvasTexture 产出球网细网格(alpha)、
+      球面旋转细纹、光晕 sprite、桌面微纹 roughnessMap、胶合板层纹、
+      equirect 渐变、接触阴影 sprite；`createProceduralMaps()` 返回
+      `{ maps, dispose() }`，`createEnvironment(renderer, source)` 用
+      `PMREMGenerator` 生成 `{ texture, dispose() }` 并 `try/catch` 降级。
+      Node 安全：顶层零副作用。
+- [x] T94 `src/game/tableModel.js`：`buildTable(maps)` 用圆角 `Shape +
+      ExtrudeGeometry` 台面（倒角吃高光）、双层侧带、`LatheGeometry` 收锥桌腿与脚环、
+      中央横撑、独立白线、带网格 alpha 的球网、车削网柱与夹具；
+      台面顶面仍严格位于 `CONFIG.table.height`。
+- [x] T95 `src/game/paddleModel.js`：`buildPaddle(bladeColor, rimColor, maps)` 用
+      椭圆水滴 `ExtrudeGeometry` 拍面、五层胶合板侧边、双面胶皮、
+      `LatheGeometry` 收腰手柄 + 缠把带；**外轮廓最大半径恒等于
+      `CONFIG.paddle.bladeRadius = 0.088`**，不改 `hitRadius` / `contactDepth`。
+- [x] T96 `src/game/models.js`：改为薄门面转发 `buildTable` / `buildPaddle`，
+      `scene.js` 的 import 路径与 `PongEngine.js` 行为不变。
+- [x] T97 `src/game/venue.js`：重写为 `createVenue(scene, maps = null)`——
+      环形 LED 广告带、三层观众缎带 + 散景 `Points`、车削灯头与桁架、
+      柔和光锥 / 光池、背景视频墙；**handle 形状严格保持
+      `{ led, cone, pool, tintMaterials, group, dispose }`**，且仍只往 scene 挂
+      1 个 group、0 盏新增光源、有一个 `color === CONFIG.arena.ledColor` 的
+      直接子 mesh（`arena.test.js` 断言依赖）；`maps === null` 全走纯色分支。
+- [x] T98 `src/game/arena.js`：`createArena(scene, lights = {}, maps = null)`
+      增加第三参并转发给 `createVenue(scene, maps)`，其余一行不改。
+- [x] T99 `src/game/scene.js`：接线 maps → `buildTable(maps)` /
+      `buildPaddle(color, rim, maps)` / `createArena(scene, lights, maps)`；
+      地面 `map`、球体细分与细纹、**`scene.environment` 保持 `null`**、
+      逐材质 `envMapIntensity = 0.24` 且仅金属件赋 PMREM `envMap`、
+      接触阴影 sprite 跟随（存在 `ball.userData`，**返回对象形状不变**）；
+      `dispose()` 追加贴图 / env 释放。`syncMeshes(view, sim)` 签名不变。
+- [x] T100 `src/stage-overlay.css` + `src/main.js`：极轻暗角与顶部冷光渐变，
+      `pointer-events: none`、`z-index: 1`、`prefers-reduced-motion` 无动画；
+      `main.js` 仅增 1 行 import；不改任何 `.vue` 文件。
+
+## 验证
+
+- [x] T90v 三张 PNG 存在、尺寸与合计体积达标；`git status` 无远程 URL /
+      密钥 / 环境变量写入；`package-lock.json` 无新依赖。
+- [x] T91v `npm test` 退出码 0、**348 用例 / 0 失败且既有断言零改动**
+      （重点 `arena.test.js` / `PongEngine.test.js` 的 Node 安全）。
+- [x] T92v `npm run build` 退出码 0；`dist/index.html` 仍为根绝对
+      `/assets/...`；`dist/assets/` 含 3 张指纹化贴图。
+- [x] T93v `wc -l` 全部 `src/game/*.js` / `src/components/*.vue` /
+      `src/composables/*.js` / `src/App.vue` / `src/main.js` ≤200 行。
+- [x] T94v relay 前缀 `/preview/<id>/` 下三视口 480×360 / 1280×900 /
+      390×844：3 张 PNG 全部 **200 且无 404**、无未捕获异常、无横向溢出，
+      能进入 `playing` 并推进固定步物理。
+- [x] T95v 已用同口径 `compare.mjs` 对比 `wtt-before-desktop-*`（**已完成测量，
+      6 项阈值中 4 项达标 / 2 项未达标，如实记录，见下方「实测数据」与偏差 D5**）：
+      未达标项不改写阈值、不补噪点凑数；`ViewImage` 仍不可用，无主观视觉判读。
+- [x] T96v `renderer.info` 诊断：draw calls ≤120、triangles ≤25000、
+      textures ≤16、lights =3、castShadowLights =1；13 项 `CONFIG` 物理 / AI
+      常量逐项一致；AI 首接率 ≥75% 且 <100%；场均回合 ≥6.9 拍；
+      倒数 3→2→1、得分定格 180 步、赛点徽标、说明三档、`Space` / `Shift`、
+      触屏预设、迭代 5/8 灯光联动均不回归。
+- [x] T97v 失败态：屏蔽 WebGL → 中文覆盖层 + 重试 / 重新开始；
+      拦截 1 张 PNG → 保留纯色仍可开局；强制 `createVenue(scene, null)`
+      → 纯色分支可开局。
+- [x] T98v 按 `verification` skill 在最终代码上重跑全部检查后，清理
+      `.verify-browser/` 全部临时截图、脚本与日志；`git status --short`
+      仅剩基线交付项（`.gitignore` / `index.html` / `openspec/` /
+      `package*.json` / `src/` / `start-preview.sh` / `vite.config.js`），
+      `package-lock.json` 中 `"playwright` 引用数 0；`tasks.md` / `proposal.md`
+      已回写最终实测数据与 D1–D12 偏差记录。
+
+## 评审
+
+- [x] R43 错误处理一致：`TextureLoader` onError 与 `PMREMGenerator` 失败都走
+      「保留纯色 / 中文 warn」，不抛异常、不进入 `MESSAGES.webgl` / `runtime`，
+      不静默降级伪装成功。
+- [x] R44 无硬编码凭据 / 密钥 / 临时远程 URL；无新增 npm 依赖；
+      无运行期 `fetch` 外部地址；无 `innerHTML` / `v-html` / `eval`。
+- [x] R45 无把 `/tmp`、模块级内存或实例私有空间当持久化；
+      贴图 / RenderTarget / geometry 全部纳入 `dispose()`，`restart()` 不泄漏。
+- [x] R46 单主色 + 中性灰阶；`error` 色未挪用；暗角不压暗边缘的球；
+      HUD 层级未被 CSS 覆盖；`prefers-reduced-motion` 有对应规则。
+- [x] R47 依赖方向单向、无循环；`visual.js` 纯数据；
+      贴图模块顶层零 DOM 副作用（Node 可 import）；
+      视觉半径与 `CONFIG` 判定半径同源，物理 / AI / 判定 / 计分零改动。
+
+---
+
+## 实测数据（迭代 11 最终复核）
+
+| 检查 | 实测 |
+| --- | --- |
+| 生成贴图 | `led-board` 1536×1024 / 1.61 MB、`crowd-bokeh` 1024×1024 / 1.05 MB、`court-floor` 1024×1024 / 1.23 MB，**合计 3.89 MB ≤8 MB**；平台工具 3 张、writer 脚本各下载一次、`ImageGen` **0 次 / 0 积分**；远程 URL 不进任何交付物 |
+| 贴图内容检查 | `ViewImage` 不可用，改浏览器解码 + 亮度图量化：三张均值亮度 19–32、`brightRatio ≤0.0003`、无高对比文字 / logo 色块；**无人脸主观判读，见偏差 D6** |
+| `npm test` | **348 / 348 通过、0 失败**，既有断言零改动 |
+| `npm run build` | 退出码 0、63 modules；`dist/index.html` 仍为根绝对 `/assets/...`，`dist/assets/` 含 3 张指纹化 PNG；迭代 9 不回归 |
+| 行数 | 全部 `src/game/*.js` / `*.vue` / `*.css` **≤200 行**，最大 `PongEngine.js` 199 / `ScoreBoard.vue` 199 / `App.vue` 198；新增 `venue.js` 186、`scene.js` 176、`stage-overlay.css` 35 |
+| relay 三视口 | `.verify-browser/wtt-after.mjs` **78 / 78 PASS**（480×360 / 1280×900 / 390×844）：3 张 PNG 全 200、无 4xx、无未捕获异常、无横向溢出、暗角 `pointer-events:none` / `z-index:1`、9 个待绑定材质全部绑定、接触阴影跟随、`scene.environment === null` 且 16 个金属件有 envMap |
+| 状态机 | 固定步确定性驱动：倒数 **3→2→1→0 / 361 步**进入 playing；得分定格 **1.5 s / 180 步**；定格后重新倒数 3；合计 **541 步**回到 playing；20 步物理位移 **0.755 m** |
+| `renderer.info` | 最终三视口实测 draw calls **71–73**（≤120）、triangles **8084–8164**（≤25000）、textures **12**（≤16）、lights **3**、castShadowLights **1**；背景 `#070a0e`、雾 8/18、相机 (0,1.52,2.5)、FOV 50、曝光 1.15 全部不变；早期全量范围为 70–82 / 7116–8420，见 D4 |
+| 玩法回归 | `gameplay.mjs`：**13/13** 物理 / AI 常量一致；200 次我方发球 AI 首接 **189/200 = 0.945**（≥0.75 且 <1）；200 场完整对打 191 场有回击、总 1446 拍、**场均 7.23 拍**（≥6.9 基线，迭代 10 为 7.46，控制器口径见 D10） |
+| 失败态 | `failure.mjs` **11 / 11 PASS**：屏蔽 WebGL → 中文覆盖层 + 重试 / 重新开始；拦截 1 张 PNG → 深色纯色占位、中文 warn、仍可开局且无白板；`createVenue(scene, null)` → 1 个 group / 0 贴图 / handle 形状不变 / dispose 移除 |
+| UI 回归 | `ui.mjs` **10 / 10 PASS**：HUD 层级（暗角 1 < 记分栏 2 < 遮罩 5）、玩法说明 modal + 焦点进出 + Escape 归还、三档选择与 `sim.ai.profile === 'sharp'`、触屏预设、10:0 赛点徽标、灯光 cue 向 PLAYING 主光收敛 |
+| 像素对比（桌面 playing，最终复核） | `colorBins 198 → 258`（+60）、`flatBlockRatio 0.7228 → 0.6161`（−0.1067）、`edgeDensity 0.0201 → 0.0212`、`darkRatio 0.1995 → 0.1935`、`brightRatio 0.0365 → 0.0269`、`meanLum 32.60 → 33.01`、`centerLum 66.33 > outerLum 26.70` |
+| 像素对比（桌面 canvas，最终复核） | `colorBins 174 → 228`（+54）、`flatBlockRatio 0.6456 → 0.5398`（−0.1058）、`edgeDensity 0.0161 → 0.0151`、`meanLum 38.88 → 36.59`、`centerLum 58.84 > outerLum 32.34` |
+
+## 偏差记录
+
+1. **D1 贴图 URL 形式**：规格写 `import url from '…png'`，实现改用
+   `new URL('../assets/textures/x.png', import.meta.url).href`。原因是 Node 单测会
+   import 到 `scene.js`，静态 PNG import 会抛 `ERR_UNKNOWN_FILE_EXTENSION`。实测 Vite dev
+   把它重写成带 relay 前缀的 URL（3 张 200），build 重写成根绝对 `/assets/...`，两条链路都对。
+2. **D2 纹理模块返回形状**：`proceduralMaps.js` 返回 `{ maps, dispose() }`，
+   `createEnvironment(renderer, source)` 独立返回 `{ texture, dispose() }`；未合成规格里的
+   `{ maps, env, dispose() }`。职责更清楚、释放顺序仍可控，`scene.js` 依次释放。
+3. **D3 环境反射改为只给金属件**：规格 §6 写「设 `scene.environment`」，实测全局 PMREM
+   让 SwiftShader 下每个 PBR 片元都采样环境贴图，帧率跌到 **1.1 fps**；改为
+   `scene.environment = null` + 仅 `metalness ≥0.5` 材质赋 `envMap`（16 个）后升到
+   **1.7 fps**。这与规格 §5「金属件给低强度环境反射」一致，`envMapIntensity = 0.24`
+   仍在 0.15–0.35 区间；`arena.js` 的 cue / tint 联动完全不受影响。
+4. **D4 软件渲染帧率**：headless SwiftShader 在 1280×900 下真实 rAF 约 1.1–1.7 fps
+   （空白页 60 fps；把 `renderer.render` 换成空操作回到 38.5 fps，确认是 GPU 呈现成本）。
+   因此验收脚本**不用真实 rAF 等 3 秒倒数**，改为固定步确定性驱动 + 冻结一帧已知
+   playing 画面后截图。真实 GPU 预算仅 70–82 draw calls / 7–8k triangles，远低于规格上限，
+   这是沙箱软件渲染限制而非产品回归；已如实记录。
+5. **D5 两项像素阈值未达标（不改写阈值、不补噪点凑数）**：
+   - 整页 `flatBlockRatio 0.6161 > 0.60`；但**真正承载 3D 的 canvas 区域为 0.5398 ≤0.60**。
+     整页统计把头部 / 页脚 / 页边距的大片纯色也算进去，指标区域选错了。
+   - `edgeDensity 0.0212 < 0.026`（canvas 0.0151）。该指标只统计水平相邻像素
+     `|Δ亮度| > 12`，对刻意压低对比、以竖向结构为主的暗场高级感画面结构性低估；
+     基线仅 0.0201，要再涨约 23% 必须铺高对比噪点，会直接破坏 WTT 的克制质感。
+   其余 4 项全部达标，且所有方向性增量都是改善（色彩层次 +60、平坦块 −0.107、
+   死黑 −0.006、亮部不过曝 −0.0096、中心亮于外圈保持）。**验收结论：4/6 达标，如实声明。**
+6. **D6 视觉主观判读缺失**：最终复核再次对桌面 / 手机 `wtt-after-*-playing.png`
+   调用 `ViewImage`，两次均返回 `vision model unavailable`；生成贴图与页面截图只做了
+   像素 / 亮度图量化检查，没有肉眼判读。director skill 建议的
+   `artifacts/game-progress.md` / `final-evidence.md`
+   按本项目「`proposal.md` + `tasks.md` 唯一事实源」的既有约定不另建，证据统一写回此处。
+7. **D7 `tagMaps` 增加受限 `mapBoost`**：生成贴图整体近黑，`MeshBasicMaterial` 的观众缎带
+   几乎读不出层次；贴图就绪后给 `color` 乘 1.7 的受限增益（观众层专用），不重新生成整套图。
+8. **D8 追加 LED 屏竖拼缝**：单个 `InstancedMesh`（52 实例 / 1 draw call）补真实高频结构，
+   不靠后期噪点；`flatBlockRatio` 因此再降约 0.006。
+9. **D9 程序化兜底分支未编译**：平台生图工具本轮可用，3 张 PNG 已产出，故 `scene.js`
+   只接生成路径 + 程序化细节模块；规格的「兜底路径只接 `proceduralMaps.js`」仍是有效设计，
+   但本轮未走到。降级能力已用「拦截 1 张 PNG」失败态实测覆盖。
+10. **D10 回合长度统计口径**：`gameplay.mjs` 用固定种子 RNG + 预测落点有界追拍，
+    与迭代 10 `rally.mjs` 的控制器不完全同构；7.23 拍与 7.46 拍的差异来自口径，
+    两者都高于 6.9 基线，物理 / AI / 判定常量经 13 项断言逐项一致，无玩法回归。
+11. **D11 技能加载与规格同步**：实际加载 `brainstorming` /
+    `threejs-game-director` / `threejs-aaa-graphics-builder` /
+    `threejs-image-generator` / `plan-writing` / `verification`，未单独加载
+    `threejs-3d-generator` / `threejs-textures` / `threejs-materials` /
+    `threejs-lighting` / `threejs-qa-release`；官方锚点表读取被拦截，
+    故未产出 10 类评分、不自称达到 director 均值门槛。收尾把
+    `proposal.md` 的工具选路、模块返回形状、`scene.environment`、贴图预算、
+    运行时降采样、像素验收结论全部同步为最终代码形态，并修正本文件
+    T91 / T92 / T93 / T99 的措辞；此次同步只改文档，不改产品代码。
+12. **D12 最终复核与清理（`verification` skill）**：在最终代码上重新跑
+    `npm test`（348/348、0 失败）、`npm run build`（退出码 0、63 modules、
+    3 张指纹化 PNG、`dist/index.html` 仍为 `/assets/...`；仅有 three chunk
+    >500 kB 的非阻断体积提示）、`gameplay.mjs`（13/13 常量、AI 首接 0.945、
+    场均 7.23 拍）、`wc -l`（无文件 >200 行）、relay `index/main.js/3 张 PNG`
+    全 200；随后顺序重跑三视口 `wtt-after.mjs` 78/78、失败态 11/11、
+    UI 10/10、`compare.mjs` 像素对比。最终三视口 `renderer.info` 为
+    71–73 draw calls / 8084–8164 triangles / 12 textures / 3 lights /
+    1 castShadowLight；像素阈值仍为 **4/6 达标**（整页平坦块 0.6161、
+    边缘密度 0.0212 两项未达标），不改阈值、不补噪点。再次对桌面 / 手机截图
+    调用 `ViewImage` 仍返回 `vision model unavailable`，故无主观视觉判读。
+    收尾删除 `.verify-browser/` 全部临时产物，`git status --short`
+    仅剩基线交付项，`package-lock.json` 中 `"playwright` 引用数 0；
+    预览仍由 `start-preview.sh` + `.preview-base` 保持 relay 前缀可用。
+
+---
+
+# 迭代 12：球拍近圆化与专用材质
+
+> 规格见 `proposal.md` 1871 行起，已获用户批准。用户选择 **C：专用贴图材质方案**：
+> 近圆真实竞技拍、保留青绿单主色、平台生成 2 张贴图 + 程序化细节。
+> 本轮不复杂（无持久化 / 多页面 / 外部接口 / 多用户权限），按 `plan-writing`
+> 规则**不另建 `design.md`**；继续以 `proposal.md` + `tasks.md` 为唯一事实源。
+> 任务清单批准前不改产品代码、不调用生图工具、不生成图片。
+
+## 实现
+
+- [x] T101 **实现前基线捕获 + 生图路径**：先用临时 Playwright 脚本在 relay 前缀下按固定近景相机
+      `position (0, 1.18, 2.05)` / `lookAt (0, 0.98, 1.5)` / FOV 35 截
+      `.verify-browser/paddle-before-desktop.png`，记录当前 3 张 PNG 状态与
+      `renderer.info`；随后调用 `WaitForMcpServers({ servers: ['media'] })` 重新探测，
+      按 `mcp__media__generate_image` → `ImageGen` → 程序化兜底的优先级选路。
+      **首次生成前明确告知实际工具与是否计费**；首选路径生成
+      `paddle-rubber.png` / `paddle-wood.png` 两张 `1024×1024` 抽象材质图，
+      经 writer 脚本各下载一次到 `src/assets/textures/`，远程临时 URL 不落任何交付物。
+      若走兜底，不产出这 2 张 PNG，并在本文件显式记录工具 / 积分 / 限制。
+- [x] T102 `src/game/visual.js`：新增 `VISUAL.paddle` 与
+      `VISUAL.texture.rubberRepeatX/Y` / `woodRepeatX/Y` 全部规格常量；
+      `tagMaps()` 增加第 5 个可选参数 `baseColor = 0xffffff`，旧调用行为不变。
+- [x] T103 新增 `src/game/paddleProfile.js`：纯数值 `paddleOutline(steps = 48)`
+      与 `handleProfile()`，不 import three、不访问 DOM；轮廓满足 48 点、首尾闭合、
+      `maxX = R` / `minX = -R` / `maxY = R` / `minY = -0.96R`、短颈半宽 `0.20R`、
+      所有点 `hypot(x,y) ≤ R + 1e-6`；柄形 7 组半径 / 轴向点严格按规格且单调。
+- [x] T104 重写 `src/game/paddleModel.js`：用 `paddleOutline()` 生成 `Shape +
+      ExtrudeGeometry` 拍面、按 `backScale` 缩小的背面、`TubeGeometry` 闭合边圈；
+      用 `handleProfile()` 生成平滑 `LatheGeometry` 木柄与 1 个扁柄端盖；
+      **删除 4 个 `TorusGeometry` 环**；正面胶皮 / 木柄经 `tagMaps()` 接
+      `rubber` / `wood` 贴图，侧边继续用 `maps.ply`；`buildPaddle()` 签名不变。
+- [x] T105 `src/game/generatedMaps.js`：按实际选路把 `SOURCES` 扩到 5 项
+      （首选 / `ImageGen`）或保持 3 项（程序化兜底）；新增项仍用
+      `new URL('../assets/textures/x.png', import.meta.url).href`，设
+      `SRGBColorSpace` / `RepeatWrapping` / 有上限 anisotropy；`bind(scene)` /
+      `dispose()` 逻辑不变。兜底路径同时让 `proceduralMaps.js` 产出同步就绪的
+      `rubber` / `wood` CanvasTexture，且 `generatedMaps.js` 不引用缺失 PNG。
+- [x] T106 新增同目录纯逻辑测试 `paddleProfile.test.js`：断言 48 个有限点、首尾闭合、
+      相邻点不重复、极角序列单调、`abs(maxX - minX - 2R) ≤ 1e-6`、
+      所有点半径上界、颈宽 `0.40R`、柄形半径单调非负、最后轴向值 `0.102`；
+      不 import three、不访问 DOM。
+- [x] T107 把实现期实际选路、生成资产、偏差与实测数据写回本文件；
+      若实现与 `proposal.md` 有差异，同步修正规格，保持两份事实源一致。
+- [x] T108 清理 `.verify-browser/` 全部临时截图 / 脚本 / 日志，刷新预览并复核
+      relay 前缀 `index` / `main.js` / 当前路径全部 PNG 均 200。
+
+## 验证
+
+- [x] T101v 运行 `ls -lh src/assets/textures` 与 PNG 头解析脚本：期望首选路径新增
+      2 张 `1024×1024` PNG、5 张生成 PNG 合计 ≤8 MB；兜底路径无新增 PNG、
+      3 张既有 PNG 合计 ≤8 MB。运行
+      `grep -RInE 'https?://|PAGES_.*(TOKEN|KEY)|process\\.env\\.[A-Z_]*(KEY|TOKEN|SECRET)' src`，
+      期望 0 命中；再运行
+      `grep -RInE 'https?://[^ ]*\\.(png|jpg|jpeg|webp)' openspec/changes/threejs-pong/proposal.md openspec/changes/threejs-pong/tasks.md`，
+      期望 0 命中；`grep -c '"playwright' package-lock.json` 期望 0。
+- [x] T102v 运行 `node --input-type=module -e` 导入 `VISUAL` / `tagMaps`：期望
+      `VISUAL.paddle.neckHalfRatio === 0.20`、`rubberEmissive === 0.28`、
+      `VISUAL.texture.rubberRepeatX === 3`；用带 `THREE.Color` 的材质桩调用
+      `tagMaps(m, {}, 0x10171d, 1, 0x2f9d80)`，期望 `m.userData.mapBaseColor === 0x2f9d80`
+      且旧式 4 参调用仍为 `0xffffff`。
+- [x] T103v 运行 `node --test src/game/paddleProfile.test.js`，期望退出码 0、
+      用例数 >0、失败数 0；再运行 `node --input-type=module -e` 导入轮廓，期望
+      输出 `POINTS 48 / MAX_RADIUS <= 0.088001 / NECK_WIDTH 0.0352 / HANDLE_END 0.102`。
+- [x] T104v 运行 `node --input-type=module -e` 用 `buildPaddle(0x2f9d80, 0x7ee2c0, null)`
+      计算 `Box3` 与 mesh 类型：期望 `abs(width - 0.176) ≤ 1e-6`、
+      `TorusGeometry` 数量 0、`TubeGeometry` 数量 1、`LatheGeometry` 数量 1、
+      mesh 数量 5、单拍三角形数 ≤1620；`buildPaddle.length === 3`。
+- [x] T105v 运行 `npm run build`，期望退出码 0、`dist/index.html` 仍为根绝对
+      `/assets/...`、`dist/assets/` 含当前路径的指纹化 PNG（首选 5 张 / 兜底 3 张）、
+      无缺失 PNG 构建错误；运行 `npm test`，期望退出码 0、用例数 >348、失败数 0。
+- [x] T106v 运行 `wc -l src/game/*.js src/components/*.vue src/composables/*.js src/*.vue src/*.css`，
+      期望全部 ≤200 行；`git status --short` 不出现 `.verify-browser/` 之外的临时交付物。
+- [x] T107v 临时 Playwright + `/opt/ms-playwright` headless shell，在 relay 前缀下跑
+      480×360 / 1280×900 / 390×844 三视口：期望当前路径全部 PNG 均 200、无 4xx、
+      无未捕获异常、无横向溢出；`renderer.info` 为 `textures ≤16 / lights 3 /
+      castShadowLights 1 / draw calls ≤73 / triangles ≤9000`；两只球拍
+      `abs(width - 0.176) ≤ 1e-6`、无 `TorusGeometry` 环、有闭合边圈与平滑木柄。
+      用 T101 同一近景相机截 `.verify-browser/paddle-after-desktop.png` 并做前后像素统计。
+- [x] T108v Node 侧脚本核对 13 项 `CONFIG` 常量、200 球 AI 首接率 ≥75% 且 <100%、
+      200 场完整对打场均 ≥6.9 拍；浏览器断言 `sessionPayload()` 九字段、倒数
+      3→2→1、得分定格 180 步 / 合计 541 步、玩法说明三档、`Space` / `Shift`、
+      触屏预设、赛点徽标、迭代 5/8 灯光 cue 均不回归。
+- [x] T109v 失败态：屏蔽 WebGL → 既有中文覆盖层 + 重试 / 重新开始；
+      首选路径拦截 1 张新 PNG、兜底路径拦截 1 张既有 PNG → 深色纯色 + 中文 warn +
+      仍可开局且无白板。若 `ViewImage` 可用，对前后近景截图做一次肉眼判读；
+      不可用时明确记录「未完成主观视觉判读」，不自称达到官方视觉评分门槛。
+- [x] T110v 清理后运行 `git status --short`，期望仅剩基线交付项；
+      调用 `restart_dev_server` 后 `curl` relay `index` / `main.js` 均 200；
+      把全部实测结果、偏差与工具 / 积分记录写回本文件「实现期偏差与实测记录」。
+
+## 评审
+
+- [x] R48 错误处理一致：单张 PNG 失败、`PMREMGenerator` 失败、WebGL 缺失都沿用
+      迭代 11 的中文 warn / 覆盖层策略；程序化兜底显式记录，不静默把未生成伪装成功。
+- [x] R49 无硬编码凭据 / 密钥 / 临时远程 URL / 环境变量 / 平台存储；
+      无新增 npm 依赖、无运行期 `fetch` 外部地址；未把 `/tmp`、模块级内存或
+      实例私有空间当持久化。
+- [x] R50 `config.js` 物理 / AI / 判定 / 计分 / 输入 / phase / 灯光 cue 数值零改动；
+      `sessionPayload()` 九字段与 `models.js` 门面不变；单主色 + 中性灰阶保持，
+      `error` 色未挪用；无 `innerHTML` / `v-html` / `eval`；新增 geometry / texture
+      全部纳入 `dispose()`，`restart()` 不泄漏。
+
+---
+
+## 实现期偏差与实测记录（迭代 12）
+
+### 选路、工具与计费
+
+- `WaitForMcpServers({ servers: ['media'] })` 返回 `ready: true`；首次生成前已明确披露实际工具。
+- 实际用**平台 `mcp__media__generate_image`** 生成 `paddle-rubber.png` / `paddle-wood.png`
+  各 1 张 `1024×1024`；**未回退 `ImageGen`、0 积分**；未启用程序化兜底路径，
+  `proceduralMaps.js` 一字未改。
+- 临时 URL 只经 `.verify-browser/generate_image_asset.mjs` 各下载一次，
+  `urls.json` 下载后立刻删除；`src` 与两份事实源远程图片 URL 命中数 0。
+- 5 张生成 PNG 合计 `7,766,432 B ≈ 7.41 MB ≤ 8 MB`；单张最大 1.85 MB，无需重编码。
+
+### 实现 / 构建 / 单测
+
+| 项 | 结果 |
+| --- | --- |
+| `npm test` | **355 / 355 PASS**（迭代 11 为 348，新增 `paddleProfile.test.js` 7 条） |
+| `paddleProfile.test.js` | 7 / 7 PASS，含「平底短颈而非水滴尖点」这一会被旧实现推翻的断言 |
+| `npm run build` | 退出码 0，64 modules，`dist/index.html` 仍为根绝对 `/assets/...` |
+| 指纹化 PNG | `dist/assets/` 5 张（含新增 `paddle-rubber-*.png` / `paddle-wood-*.png`） |
+| 行数 | 全部 `src/game/*.js` / `*.vue` / `*.css` ≤200 行 |
+| 依赖 / 密钥 | `package-lock.json` 中 `"playwright` 命中数 0；`process.env` 密钥 / 远程 URL / 凭据命中数 0 |
+| 改动面 | 仅 `visual.js` / `generatedMaps.js` / `paddleModel.js` / `paddleProfile.js` / `paddleProfile.test.js` + 2 张 PNG；`config.js` / `physics.js` / `rally.js` / `ai.js` / `contact.js` / `session.js` / `PongEngine.js` / `models.js` / `scene.js` 时间戳均未变 |
+
+### 几何与渲染（同相机近景，relay 前缀，1280×900）
+
+| 指标 | 改前 | 改后 | 规格 |
+| --- | --- | --- | --- |
+| 单拍 mesh | 8 | **5** | 5 |
+| `TorusGeometry` | 5（边圈 1 + 缠把环 4） | **0** | 0 |
+| `TubeGeometry` | 0 | **1** | 1 |
+| `LatheGeometry` | 1 | 1 | 1 |
+| 单拍三角形 | 1620 | **939** | ≤1620 |
+| 宽度 | 0.1762117 | **0.1760000**（Δ 9.5e-10） | `abs(w−0.176) ≤ 1e-6` |
+| 高度 | 0.2811800 | **0.2764800** | < 改前 |
+| 深度 | 0.0413369 | 0.0360000 | — |
+| `renderer.info.textures` | 12 | **14** | ≤16 |
+| draw calls | 70 | **64** | ≤73 |
+| triangles | 8084 | **6722** | ≤9000 |
+| lights / castShadowLights | 3 / 1 | 3 / 1 | 3 / 1 |
+
+### 浏览器验收
+
+- 三视口 `480×360` / `1280×900` / `390×844` 全量脚本 **101 PASS / 0 FAIL**：
+  5 张 PNG 全 200、无 4xx、无未捕获异常、无横向溢出；两只球拍各断言宽度 / 0 环 /
+  闭合边圈 / 平滑木柄 / 5 mesh / 三角形 / 贴图绑定 / 单主色恢复
+  （玩家 `0x2f9d80`、AI `0xaab3bd`）。
+- 状态机与 UI 回归：`sessionPayload()` 九字段不变；倒数 **3→2→1→0 / 361 步**；
+  得分定格 **179 步未回置（`x=0.42`）/ 第 180 步回置且重新倒数 3 / 合计 541 步**进入
+  `playing`（与迭代 8 完全一致）；玩法说明三档 `practice / sharp / standard` 生效、
+  Escape 关闭且焦点归位；`Space` 蓄力快攻 / `Shift` 搓短下旋 / 三个触屏预设生效；
+  赛点徽标出现；灯光 cue 对 `serving / playing / gameover / ready` 四种 phase 均不抛异常。
+- 失败态：屏蔽 WebGL → 既有中文错误覆盖层 + 重试 / 重新开始；拦截
+  `paddle-rubber.png` → 胶皮保持 `0x182820` 深色纯色、`map` 为空、中文 warn、
+  游戏仍可开局、无错误覆盖层、无未捕获异常。
+- 浏览器脚本一条断言曾把 Chrome 对**主动 abort 请求**打的
+  `Failed to load resource: net::ERR_FAILED` 计为应用异常；已收窄为「未捕获异常 +
+  错误覆盖层」并单独断言该网络日志存在，复跑 `101/101`。这是验收脚本口径修正，
+  不是产品行为改动。
+
+### 玩法零回归（复用迭代 11 同种子 `gameplay.mjs`）
+
+- **13 / 13** 项 `CONFIG` 物理 / AI 常量一致；AI 首接率 **189/200 = 0.945**
+  （≥0.75 且 <1）；200 场完整对打 191 场有回击、总 1446 拍、**场均 7.23 拍**
+  （≥6.9）。三项与迭代 11 记录**逐位相同**，因为物理 / AI / 判定模块本轮零改动。
+
+### 前后像素统计（近景 ROI `x 384–896 / y 162–855`）
+
+| 指标 | 改前 | 改后 |
+| --- | --- | --- |
+| `meanLum` | 48.60 | 43.79 |
+| `stdLum` | 43.80 | 39.66 |
+| `colorBins` | 198 | 178 |
+| `brightRatio` | 0.0249 | 0.0342 |
+| `darkRatio` | 0.3863 | 0.3766 |
+| `edgeDensity` | 0.0658 | **0.0683** |
+
+- 同相机前后差异：`meanAbsDelta 8.29`、`changedRatio 0.1829`，确认拍型确实改变。
+- `edgeDensity` 略升（闭合细边圈），`meanLum` 下降符合规格把胶皮 emissive
+  `0.42 → 0.28`（不再像灯板）的预期；`colorBins 198 → 178` 主要来自删掉 4 个深色环
+  与改用低调专用贴图。规格对迭代 12 **未设像素阈值**，此处只记录实测、不改写阈值、
+  不补噪点凑数。
+- `ViewImage` 对前后两张截图均返回 `vision model unavailable`：
+  **未完成主观视觉判读**，不自称达到官方视觉评分门槛；结论只基于几何断言、
+  渲染器诊断、像素统计与 DOM 断言。
+
+### 偏差
+
+1. **D1 总高度 0.27648 ≠ 规格 0.27448**：规格算的是 `R + 0.96R + 0.102`
+   （到木柄末端），实际柄端盖再向下多出半个厚度 `0.002 m`。仍小于改前
+   `0.2811800`，且 `< bladeRadius` 相关约束不受影响；同步修正 `proposal.md`。
+2. **D2 边圈曲线内缩**：规格写「沿 `paddleOutline()` 的 `CatmullRomCurve3` 闭合生成」，
+   实测闭合样条在圆弧段会外鼓约 0.1–0.4 mm，会让整拍宽度越过 `2R`。实现把曲线点
+   按 `(R − 2·rimRadius)/R` 内缩后建 `TubeGeometry`，保证整拍宽度严格由拍面决定；
+   边圈落在正面 `z = 0.006`，视觉上是一道细窄压边。
+3. **D3 `buildPaddle` 去掉冗余默认值**：规格同时要求「签名不变」与
+   `buildPaddle.length === 3`；旧的 `maps = null` 使 `Function.length` 为 2。实现保留
+   三参数 `(bladeColor, rimColor, maps)`、移除默认值，行为不变（`maps?.ply` 兼容
+   `undefined`），`length === 3` 达标。
+4. **D4 主观视觉判读未完成**：见上；`ViewImage` 不可用是本环境限制，非产品缺陷。
+5. **D5 无程序化兜底实测**：平台工具与 `ImageGen` 都可用，故未触发兜底路径；
+   `proceduralMaps.js` 新增 `rubber` / `wood` CanvasTexture 的兜底分支只保留在规格中，
+   本轮未实现也未验证，不宣称已覆盖。

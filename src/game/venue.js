@@ -1,31 +1,73 @@
-// 静态赛场几何：全部 three 基础几何 + 纯色 / emissive 材质，无外部资源、无新增光源。
+// WTT 式赛场：环形 LED 广告带、三层观众缎带 + 散景、车削灯头桁架、光锥光池、背景墙。
+// handle 形状严格保持 { led, cone, pool, tintMaterials, group, dispose }，不新增真实光源。
 import * as THREE from 'three'
 import { CONFIG } from './config.js'
+import { VISUAL, tagMaps } from './visual.js'
 
-export function createVenue(scene) {
+function lampHeadGeometry() {
+  const points = [
+    new THREE.Vector2(0.02, 0), new THREE.Vector2(0.14, 0.01),
+    new THREE.Vector2(0.17, 0.06), new THREE.Vector2(0.15, 0.13),
+    new THREE.Vector2(0.09, 0.2), new THREE.Vector2(0.03, 0.24),
+  ]
+  return new THREE.LatheGeometry(points, VISUAL.beam.headSegments)
+}
+
+function bokehPoints(material) {
+  const count = VISUAL.glow.bokehCount
+  const positions = new Float32Array(count * 3)
+  for (let i = 0; i < count; i += 1) {
+    const t = i / count
+    const row = i % 3
+    positions[i * 3] = -4.6 + ((i * 0.618033) % 1) * 9.2
+    positions[i * 3 + 1] = 0.85 + row * 0.34 + ((i * 0.371) % 1) * 0.22
+    positions[i * 3 + 2] = -4.35 - row * 0.56 - 0.5 * Math.abs(t - 0.5)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  return new THREE.Points(geo, material)
+}
+
+export function createVenue(scene, maps = null) {
   const A = CONFIG.arena
   const group = new THREE.Group()
+  const L = A.light.READY
 
   const barrier = new THREE.MeshStandardMaterial({ color: A.barrierColor, roughness: 1 })
+  // led 保持纯色，由 arena.js 的 cue 驱动 emissive / intensity；arena.test.js 按颜色定位它。
   const led = new THREE.MeshStandardMaterial({
-    color: A.ledColor,
-    emissive: A.ledColor,
-    emissiveIntensity: A.light.READY.led,
-    roughness: 0.5,
+    color: A.ledColor, emissive: A.ledColor, emissiveIntensity: L.led, roughness: 0.5,
   })
+  // 生成贴图本身是低亮度近黑底，emissiveMap 会把它再乘暗一次；提高自发光强度
+  // 才能让细光带真正读出来（仍远低于亮部阈值，不炸白）。
+  const board = tagMaps(new THREE.MeshStandardMaterial({
+    color: 0xffffff, emissive: 0x7ee2c0, emissiveIntensity: 2.6, roughness: 0.62,
+  }), { map: 'led', emissiveMap: 'led' })
+  const crowd = tagMaps(new THREE.MeshBasicMaterial({
+    color: 0xffffff, toneMapped: false, side: THREE.DoubleSide,
+  }), { map: 'crowd' }, 0x10171d, 1.7)
   const rig = new THREE.MeshStandardMaterial({ color: 0x222a32, roughness: 0.85 })
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0x4a555e, roughness: VISUAL.material.steel.roughness,
+    metalness: VISUAL.material.steel.metalness,
+  })
   const head = new THREE.MeshBasicMaterial({ color: A.beamColor, toneMapped: false })
   const cone = new THREE.MeshBasicMaterial({
-    color: A.beamColor, transparent: true, opacity: A.light.READY.cone,
+    color: A.beamColor, transparent: true, opacity: L.cone,
     depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
   })
   const pool = new THREE.MeshBasicMaterial({
-    color: A.poolColor, transparent: true, opacity: A.light.READY.pool,
+    color: A.poolColor, transparent: true, opacity: L.pool,
     depthWrite: false, toneMapped: false,
   })
   const audience = new THREE.MeshStandardMaterial({ color: A.audienceColor, roughness: 1 })
   const floorLine = new THREE.MeshBasicMaterial({
     color: A.ledColor, transparent: true, opacity: 0.1, depthWrite: false, toneMapped: false,
+  })
+  const glowMat = new THREE.PointsMaterial({
+    color: 0xbfe8dc, map: maps?.glow ?? null, size: VISUAL.glow.spriteSize,
+    transparent: true, opacity: 0.68, depthWrite: false,
+    blending: THREE.AdditiveBlending, toneMapped: false,
   })
 
   const add = (geometry, material, x, y, z) => {
@@ -35,61 +77,103 @@ export function createVenue(scene) {
     return mesh
   }
 
-  // 四面近黑围挡 + 顶部四条青绿 LED 光带（共用同一个 led 材质）。
+  // 四面近黑围挡 + 顶部青绿 LED 光带（cue 用）+ 环形广告带（生成贴图）。
   for (const side of [-1, 1]) {
     add(new THREE.BoxGeometry(0.08, 1, 7.2), barrier, side * 2.7, 0.5, 0)
     add(new THREE.BoxGeometry(0.04, 0.03, 7.2), led, side * 2.7, 1.02, 0)
+    add(new THREE.BoxGeometry(0.035, 0.38, 7.2), board, side * 2.69, 0.72, 0)
     add(new THREE.BoxGeometry(5.5, 1, 0.08), barrier, 0, 0.5, side * 3.6)
     add(new THREE.BoxGeometry(5.5, 0.03, 0.04), led, 0, 1.02, side * 3.6)
+    add(new THREE.BoxGeometry(5.5, 0.38, 0.035), board, 0, 0.72, side * 3.59)
   }
 
-  // 顶部灯架横梁、立柱与灯头：只是几何，不新增真实光源。
-  add(new THREE.BoxGeometry(6.2, 0.08, 0.08), rig, 0, 3, 0)
+  // 环形 LED 屏的竖向拼缝：单个 InstancedMesh，1 个 draw call，
+  // 给近黑广告带补上真实的高频结构，而不是靠后期噪点凑细节。
+  const seamGeo = new THREE.BoxGeometry(0.007, 0.36, 0.007)
+  const seamMat = new THREE.MeshBasicMaterial({
+    color: 0xc9e6dc, transparent: true, opacity: 0.52,
+    depthWrite: false, toneMapped: false,
+  })
+  const seamCount = 52
+  const seams = new THREE.InstancedMesh(seamGeo, seamMat, seamCount)
+  const seamDummy = new THREE.Object3D()
+  let seamIndex = 0
   for (const side of [-1, 1]) {
-    add(new THREE.BoxGeometry(0.06, 3, 0.06), rig, side * 3, 1.5, 0)
-    add(new THREE.BoxGeometry(0.5, 0.12, 0.3), head, side * 1, 2.92, 0)
+    for (let i = 0; i < 14; i += 1) {
+      seamDummy.position.set(side * 2.668, 0.72, -3.45 + i * (6.9 / 13))
+      seamDummy.updateMatrix()
+      seams.setMatrixAt(seamIndex, seamDummy.matrix)
+      seamIndex += 1
+    }
+    for (let i = 0; i < 12; i += 1) {
+      seamDummy.position.set(-2.65 + i * (5.3 / 11), 0.72, side * 3.572)
+      seamDummy.updateMatrix()
+      seams.setMatrixAt(seamIndex, seamDummy.matrix)
+      seamIndex += 1
+    }
+  }
+  seams.instanceMatrix.needsUpdate = true
+  group.add(seams)
+
+  // 三层观众缎带 + 散景光点 + 远端视频墙，取代 120 个同色小盒。
+  for (let row = 0; row < 3; row += 1) {
+    add(new THREE.PlaneGeometry(9.4, 1.15), crowd,
+      0, 0.85 + row * 0.34, -4.3 - row * 0.56)
+  }
+  group.add(bokehPoints(glowMat))
+  add(new THREE.PlaneGeometry(9.4, 2.1), board, 0, 2.15, -6.2)
+
+  // 桁架：横梁 + 立柱 + 斜撑 + 车削灯头 + 灯头光晕。
+  add(new THREE.CylinderGeometry(0.035, 0.035, 6.2, 10), rig, 0, 3, 0)
+    .rotation.z = Math.PI / 2
+  const headGeo = lampHeadGeometry()
+  for (const side of [-1, 1]) {
+    add(new THREE.CylinderGeometry(0.03, 0.03, 3, 10), rig, side * 3, 1.5, 0)
+    const brace = add(new THREE.CylinderGeometry(0.018, 0.018, 1.15, 8), rig,
+      side * 2.25, 2.72, 0)
+    brace.rotation.z = side * 0.72
+    const lamp = add(headGeo, steel, side * 1, 2.78, 0)
+    lamp.rotation.x = Math.PI
+    add(new THREE.SphereGeometry(0.085, 12, 8), head, side * 1, 2.82, 0)
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      color: A.beamColor, map: maps?.glow ?? null, transparent: true,
+      opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }))
+    halo.position.set(side * 1, 2.82, 0)
+    halo.scale.setScalar(VISUAL.glow.headSize)
+    group.add(halo)
   }
 
-  // 两道半透明光锥：顶点朝下落在台面附近。
+  // 两道半透明光锥 + 地面光池 + 细线地贴。
   for (const side of [-1, 1]) {
-    const beam = add(new THREE.ConeGeometry(1.5, 2.9, 24, 1, true), cone, side * 0.9, 2.2, 0)
+    const beam = add(new THREE.ConeGeometry(1.5, 2.9, VISUAL.beam.coneSegments, 1, true),
+      cone, side * 0.9, 2.2, 0)
     beam.rotation.x = Math.PI
   }
-
-  // 桌面下方的地面光池与细线地贴。
   const poolMesh = add(new THREE.CircleGeometry(2, 32), pool, 0, 0.008, 0)
   poolMesh.rotation.x = -Math.PI / 2
   for (const side of [-1, 1]) {
     add(new THREE.BoxGeometry(5.4, 0.002, 0.012), floorLine, 0, 0.006, side * 2)
   }
 
-  // 三层弧形观众席剪影：单个 InstancedMesh，约 120 个暗色小盒。
+  // 保留少量暗色座席剪影做近景遮挡，仍为单个 InstancedMesh。
   const seats = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(0.16, 0.22, 0.16), audience, 120,
+    new THREE.BoxGeometry(0.16, 0.22, 0.16), audience, 60,
   )
   const dummy = new THREE.Object3D()
-  let index = 0
-  for (let row = 0; row < 3; row += 1) {
-    for (let seat = 0; seat < 40; seat += 1) {
-      const x = -4.4 + seat * (8.8 / 39)
-      dummy.position.set(x, 0.7 + row * 0.32, -4.2 - row * 0.55 - 0.6 * Math.abs(x) / 4.4)
-      dummy.scale.setScalar(0.85 + ((seat + row) % 5) * 0.06)
-      dummy.updateMatrix()
-      seats.setMatrixAt(index, dummy.matrix)
-      index += 1
-    }
+  for (let i = 0; i < 60; i += 1) {
+    dummy.position.set(-4.4 + i * (8.8 / 59), 0.62, -3.95 - 0.4 * Math.abs(i / 59 - 0.5))
+    dummy.scale.setScalar(0.85 + (i % 5) * 0.06)
+    dummy.updateMatrix()
+    seats.setMatrixAt(i, dummy.matrix)
   }
   seats.instanceMatrix.needsUpdate = true
   group.add(seats)
 
   scene.add(group)
-
   const handle = {
-    led,
-    cone,
-    pool,
-    tintMaterials: [led],
-    group,
+    led, cone, pool, tintMaterials: [led, board], group,
     dispose() {
       scene.remove(group)
       handle.led = null

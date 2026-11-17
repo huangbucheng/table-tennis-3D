@@ -5,9 +5,9 @@ import { CONFIG } from './config.js'
 import { LIGHT_KEYS, cueFromTransition, damp, decayPulse, lightTarget } from './arenaState.js'
 import { createVenue } from './venue.js'
 
-export function createArena(scene, lights = {}) {
+export function createArena(scene, lights = {}, maps = null) {
   const A = CONFIG.arena
-  const venue = createVenue(scene)
+  const venue = createVenue(scene, maps)
   const tints = {}
   for (const [key, value] of Object.entries(A.tints)) tints[key] = new THREE.Color(value)
   const ledColor = new THREE.Color(A.tints.default)

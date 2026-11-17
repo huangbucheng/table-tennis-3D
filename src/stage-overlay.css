@@ -1,0 +1,35 @@
+/* 迭代 11：不参与交互的赛场暗角与顶部冷光，纯装饰、不盖 HUD。 */
+.stage-wrap::before,
+.stage-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.stage-wrap::before {
+  background: radial-gradient(
+    ellipse 78% 78% at 50% 48%,
+    rgba(4, 7, 11, 0) 55%,
+    rgba(4, 7, 11, 0.42) 100%
+  );
+}
+
+.stage-wrap::after {
+  background: linear-gradient(
+    180deg,
+    rgba(126, 226, 192, 0.1) 0%,
+    rgba(126, 226, 192, 0) 26%
+  );
+}
+
+/* 装饰层本身不含动画；Reduced motion 下显式关闭任何继承来的过渡。 */
+@media (prefers-reduced-motion: reduce) {
+  .stage-wrap::before,
+  .stage-wrap::after {
+    animation: none;
+    transition: none;
+  }
+}
