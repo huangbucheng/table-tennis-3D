@@ -127,3 +127,38 @@ test('自定义 config 即使缺少 spin 段也应回退到默认参数', () => 
   const custom = { ball: { ...CONFIG.ball } }
   near(spinAcceleration(1, 4, custom).y, -0.55 * 4, '自定义 config 回退')
 })
+
+test('反手推挡应为无旋，并沿既有横向速度方向叠加固定偏置', () => {
+  const right = applyIntent(ball(), { type: 'block', charge: 0 })
+  assert.strictEqual(right.spin, 0, `期望无旋，实际 ${right.spin}`)
+  near(right.velocity.x, CONFIG.spin.blockVxBias, 'vx=0 时向 +x 叠加')
+  near(right.velocity.y, ball().velocity.y + CONFIG.spin.blockVyLift, '期望弧线略抬')
+  near(right.velocity.z, ball().velocity.z, '期望 z 速度不变')
+  const left = applyIntent(
+    { ...ball(), velocity: { ...ball().velocity, x: -0.5 } },
+    { type: 'block', charge: 0 },
+  )
+  near(left.velocity.x, -0.5 - CONFIG.spin.blockVxBias, '期望负 vx 向 -x 叠加')
+})
+
+test('反手推挡的横向速度应被夹到 blockVxClamp 内', () => {
+  const fast = applyIntent({ ...ball(), velocity: { ...ball().velocity, x: 1.39 } }, { type: 'block', charge: 0 })
+  assert.strictEqual(fast.velocity.x, CONFIG.spin.blockVxClamp,
+    `期望夹到上限 ${CONFIG.spin.blockVxClamp}，实际 ${fast.velocity.x}`)
+  const slow = applyIntent({ ...ball(), velocity: { ...ball().velocity, x: -1.39 } }, { type: 'block', charge: 0 })
+  assert.strictEqual(slow.velocity.x, -CONFIG.spin.blockVxClamp,
+    `期望夹到下限 ${-CONFIG.spin.blockVxClamp}，实际 ${slow.velocity.x}`)
+})
+
+test('反手推挡遇非有限 vx 时不应产生 NaN', () => {
+  const bad = { ...ball(), velocity: { ...ball().velocity, x: NaN } }
+  const out = applyIntent(bad, { type: 'block', charge: 0 })
+  assert.ok(Number.isFinite(out.velocity.x), `期望有限数，实际 ${out.velocity.x}`)
+})
+
+test('反手推挡不应修改传入的球对象', () => {
+  const original = ball()
+  applyIntent(original, { type: 'block', charge: 0 })
+  assert.strictEqual(original.velocity.x, 0, '期望原 vx 不变')
+  assert.strictEqual(original.spin, undefined, '期望原对象不含 spin 字段')
+})

@@ -1,17 +1,19 @@
 :root {
-  --bg: #15181d;
-  --surface: #1d222a;
-  --surface-2: #252b34;
-  --border: #333b46;
+  /* 迭代 14：页面外壳抬到中明度中性浅灰蓝，与深青绿球台错开；
+     青绿仍是唯一主色，白字 / muted / error 对比均已按 WCAG ≥4.5:1 校验。 */
+  --bg: #303b47;
+  --surface: #384552;
+  --surface-2: #414e5b;
+  --border: #5b6875;
   --text: #f5f3ee;
-  --muted: #aab2bd;
+  --muted: #c2cbd4;
   --accent: #1c6b5a;
   --accent-hover: #23856f;
   --accent-active: #175647;
   --accent-bright: #7ee2c0;
-  --broadcast-bg: rgba(10, 14, 18, 0.88);
+  --broadcast-bg: rgba(42, 53, 64, 0.90);
   --broadcast-line: rgba(126, 226, 192, 0.28);
-  --error: #e0705f;
+  --error: #f7b0a0;
 }
 
 *,

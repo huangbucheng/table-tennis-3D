@@ -1,10 +1,9 @@
 <script setup>
-import { ref } from 'vue'
-import GameGuide from './components/GameGuide.vue'
+import { computed, ref } from 'vue'
+import AppHeader from './components/AppHeader.vue'
 import GameOverOverlay from './components/GameOverOverlay.vue'
 import ScoreBoard from './components/ScoreBoard.vue'
 import ServeCountdown from './components/ServeCountdown.vue'
-import SoundToggle from './components/SoundToggle.vue'
 import StartOverlay from './components/StartOverlay.vue'
 import TouchControls from './components/TouchControls.vue'
 import { usePongGame } from './composables/usePongGame.js'
@@ -12,29 +11,29 @@ import { usePongGame } from './composables/usePongGame.js'
 const stage = ref(null)
 const guideOpen = ref(false)
 const {
-  state, aiLevel, start, restart, toggleMuted, selectIntent, setAiLevel, retry,
+  state, aiLevel, playMode, start, restart, toggleMuted,
+  selectIntent, setAiLevel, setPlayMode, retry,
 } = usePongGame(stage)
+
+const stageLabel = computed(() => playMode.value === 'action'
+  ? '3D 乒乓球球桌，动作模式：球拍自动追球，用数字键 1 到 4 选出拍方式'
+  : '3D 乒乓球球桌，用 WASD / 方向键或拖动移动球拍')
 </script>
 
 <template>
   <main class="app-shell">
-    <header class="app-header">
-      <div class="brand">
-        <h1><span class="brand-mark" aria-hidden="true"></span>桌上一局</h1>
-        <p>3D 乒乓球 · 人机对战 · 11 分制</p>
-      </div>
-      <div class="header-actions">
-        <GameGuide
-          :open="guideOpen"
-          :ai-level="aiLevel"
-          :disabled="Boolean(state.error)"
-          @toggle="guideOpen = !guideOpen"
-          @close="guideOpen = false"
-          @select-level="setAiLevel"
-        />
-        <SoundToggle :muted="state.muted" @toggle="toggleMuted" />
-      </div>
-    </header>
+    <AppHeader
+      :guide-open="guideOpen"
+      :ai-level="aiLevel"
+      :mode="playMode"
+      :muted="state.muted"
+      :disabled="Boolean(state.error)"
+      @toggle-guide="guideOpen = !guideOpen"
+      @close-guide="guideOpen = false"
+      @select-level="setAiLevel"
+      @change-mode="setPlayMode"
+      @toggle-muted="toggleMuted"
+    />
 
     <section class="stage-wrap" aria-label="游戏区域">
       <div
@@ -42,7 +41,7 @@ const {
         class="game-stage"
         tabindex="0"
         role="application"
-        aria-label="3D 乒乓球球桌，用 WASD / 方向键或拖动移动球拍"
+        :aria-label="stageLabel"
       ></div>
 
       <ScoreBoard
@@ -78,10 +77,14 @@ const {
       </div>
     </section>
 
-    <TouchControls :selected="state.pending" @select="selectIntent" />
+    <TouchControls :selected="state.pending" :mode="playMode" @select="selectIntent" />
 
     <footer class="app-footer">
-      <p>
+      <p v-if="playMode === 'action'">
+        动作模式：球拍自动追球，按 <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd>
+        或下方按钮选出拍方式 · 完整说明见右上角「玩法说明」
+      </p>
+      <p v-else>
         球台上拖动或 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / 方向键移动球拍 ·
         完整操作与对手强度设置见右上角「玩法说明」
       </p>
@@ -101,51 +104,16 @@ const {
   padding: 24px;
 }
 
-.app-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.brand h1 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 28px;
-  line-height: 1.4;
-}
-
-.brand p {
-  margin: 4px 0 0;
-  color: #aab2bd;
-  font-size: 16px;
-}
-
-.brand-mark {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #7ee2c0;
-}
-
 .stage-wrap {
   position: relative;
   width: 100%;
   height: min(66vh, 620px);
   min-height: 360px;
   overflow: hidden;
-  border: 1px solid #333b46;
+  border: 1px solid var(--border);
   border-radius: 16px;
-  background: #070a0e;
+  /* 迭代 14：仅 3D 舞台容器的兜底底色与新背景对齐，不是页面外壳配色。 */
+  background: #45525f;
 }
 
 .game-stage {
@@ -164,7 +132,7 @@ const {
 }
 
 .app-footer {
-  color: #aab2bd;
+  color: var(--muted);
   font-size: 16px;
 }
 
@@ -180,14 +148,6 @@ const {
   .app-shell {
     padding: 16px;
     gap: 12px;
-  }
-
-  .app-header {
-    flex-wrap: wrap;
-  }
-
-  .brand h1 {
-    font-size: 22px;
   }
 
   .stage-wrap {

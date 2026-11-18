@@ -134,3 +134,11 @@ test('下旋球落台后水平速度应回缩', () => {
   const vz = stepBall(state, 0.01).ball.velocity.z
   assert.ok(vz > -3 && vz < 0, `期望 |vz| 减小且方向不变，实际 ${vz}`)
 })
+
+test('反手推挡应为无旋、线路更开且仍能过网落在对方半台', () => {
+  const f = flight({ type: 'block', charge: 0 })
+  assert.strictEqual(f.out.spin, 0, `期望无旋，实际 ${f.out.spin}`)
+  assert.ok(f.out.velocity.x > 0, `期望线路更开，实际 vx=${f.out.velocity.x}`)
+  assert.strictEqual(f.foul, null, `期望不犯规，实际 ${f.foul}`)
+  assert.strictEqual(f.first?.side, 'ai', `期望首落点在对方半台，实际 ${JSON.stringify(f.first)}`)
+})

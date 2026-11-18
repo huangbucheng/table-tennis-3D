@@ -45,6 +45,15 @@ export function applyIntent(ball, intent, config) {
     velocity.y += s.pushVyLift
     return { ...ball, velocity, spin: s.pushSpin }
   }
+  if (type === 'block') {
+    // 反手推挡：无旋平击，沿既有横向速度方向叠加偏置（vx=0 时取 +1，保持确定性）。
+    const b = { ...CONFIG.spin, ...s }
+    const vx = finite(velocity.x)
+    const direction = vx >= 0 ? 1 : -1
+    velocity.x = clamp(vx + direction * b.blockVxBias, -b.blockVxClamp, b.blockVxClamp)
+    velocity.y += b.blockVyLift
+    return { ...ball, velocity, spin: 0 }
+  }
   // none、未知 type、null 或非对象输入：数值原样，仅补 spin: 0。
   return { ...ball, spin: 0 }
 }

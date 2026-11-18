@@ -188,3 +188,13 @@ test('不传 hooks 的 advanceSimulation 仍应正常推进', () => {
   assert.doesNotThrow(() => advanceSimulation(armed('player'), CONFIG.fixedDt, { x: 0, y: 0 }),
     '期望缺省 hooks 不抛错')
 })
+
+test('options.speed 应覆盖手动步速，缺省时与既有行为逐位一致', () => {
+  const dt = 0.1, axes = { x: 1, y: 0 }
+  const base = createSimulation(), plain = createSimulation(), fast = createSimulation()
+  advanceSimulation(base, dt, axes)
+  advanceSimulation(plain, dt, axes, {}, INTENT_NONE, {})
+  advanceSimulation(fast, dt, axes, {}, INTENT_NONE, { speed: CONFIG.autoPaddle.speed })
+  assert.strictEqual(plain.playerPaddle.x, base.playerPaddle.x, '期望缺省行为不变')
+  assert.ok(Math.abs(fast.playerPaddle.x - CONFIG.autoPaddle.speed * dt) < 1e-9, '期望按传入步速移动')
+})

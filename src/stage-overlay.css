@@ -9,18 +9,20 @@
   border-radius: inherit;
 }
 
+/* 迭代 14：边缘压暗再从 0.22 收到 0.10，tint 换成浅冷灰；两个 alpha 与
+   VISUAL.vignette 保持同值。中央 55% 仍完全透明，不影响读球。 */
 .stage-wrap::before {
   background: radial-gradient(
     ellipse 78% 78% at 50% 48%,
-    rgba(4, 7, 11, 0) 55%,
-    rgba(4, 7, 11, 0.42) 100%
+    rgba(28, 38, 48, 0) 55%,
+    rgba(28, 38, 48, 0.10) 100%
   );
 }
 
 .stage-wrap::after {
   background: linear-gradient(
     180deg,
-    rgba(126, 226, 192, 0.1) 0%,
+    rgba(126, 226, 192, 0.12) 0%,
     rgba(126, 226, 192, 0) 26%
   );
 }

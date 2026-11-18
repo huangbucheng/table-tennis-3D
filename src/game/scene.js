@@ -34,7 +34,8 @@ function applyEnvironment(scene, texture) {
 export function createScene(container) {
   const scene = new THREE.Scene()
   scene.background = new THREE.Color(COLORS.background)
-  scene.fog = new THREE.Fog(COLORS.background, 8, 18)
+  // 迭代 13：远端雾距 18→22，让抬亮后的远景不被过早压回背景色。
+  scene.fog = new THREE.Fog(COLORS.background, VISUAL.atmosphere.fogNear, VISUAL.atmosphere.fogFar)
 
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100)
   camera.position.set(0, 1.52, 2.5)
@@ -63,7 +64,7 @@ export function createScene(container) {
     tagMaps(new THREE.MeshStandardMaterial({
       color: COLORS.floor, roughness: VISUAL.material.floor.roughness,
       metalness: VISUAL.material.floor.metalness, roughnessMap: maps.micro,
-    }), { map: 'floor' }),
+    }), { map: 'floor' }, COLORS.floor, VISUAL.atmosphere.floorBoost),
   )
   floor.rotation.x = -Math.PI / 2
   floor.receiveShadow = true

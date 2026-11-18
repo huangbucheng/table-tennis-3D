@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { GUIDE_SECTIONS, AI_LEVELS, guideSections, aiLevelOptions } from './guide.js'
 import { AI_LEVEL_KEYS } from './matchSettings.js'
 
-test('说明应恰好覆盖五组且每组有非空标题与条目', () => {
+test('说明应恰好覆盖六组且每组有非空标题与条目', () => {
   const sections = guideSections()
-  assert.strictEqual(sections.length, 5,
-    `期望五组说明，实际 ${sections.length} 组`)
+  assert.strictEqual(sections.length, 6,
+    `期望六组说明，实际 ${sections.length} 组`)
   for (const group of sections) {
     assert.ok(group.id && group.title,
       `期望每组有 id 与标题，实际 ${JSON.stringify(group)}`)
@@ -19,10 +19,17 @@ test('说明应恰好覆盖五组且每组有非空标题与条目', () => {
   }
 })
 
-test('说明分组顺序应为移动 / 力度 / 线路 / 对手 / 规则', () => {
+test('说明分组顺序应为模式 / 移动 / 力度 / 线路 / 对手 / 规则', () => {
   assert.deepStrictEqual(guideSections().map((s) => s.id),
-    ['move', 'power', 'line', 'ai', 'rules'],
-    `期望五组顺序固定，实际 ${guideSections().map((s) => s.id)}`)
+    ['mode', 'move', 'power', 'line', 'ai', 'rules'],
+    `期望六组顺序固定，实际 ${guideSections().map((s) => s.id)}`)
+})
+
+test('玩法模式说明应写清两种模式、四个动作与单槽消费', () => {
+  const text = guideSections().find((s) => s.id === 'mode').items.join('')
+  for (const key of ['手动移动', '动作模式', '正手攻球', '反手推挡', '搓短', '1 / 2 / 3 / 4', '下一拍']) {
+    assert.ok(text.includes(key), `期望模式说明提到「${key}」，实际 ${text}`)
+  }
 })
 
 test('说明不应含占位符或 HTML 标签，可安全用插值渲染', () => {

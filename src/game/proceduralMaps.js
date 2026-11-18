@@ -2,11 +2,15 @@
 // arena.test.js 在 Node 里会 import 到本模块的调用链，故不能出现顶层 document。
 import * as THREE from 'three'
 import { VISUAL } from './visual.js'
+import { cssHex } from './palette.js'
 
-function makeTexture(size, draw, { srgb = false, repeat = null } = {}) {
+const A = VISUAL.atmosphere
+
+function makeTexture(size, draw, { srgb = false, repeat = null, height = size } = {}) {
   const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = size
-  draw(canvas.getContext('2d'), size)
+  canvas.width = size
+  canvas.height = height
+  draw(canvas.getContext('2d'), size, height)
   const texture = new THREE.CanvasTexture(canvas)
   if (srgb) texture.colorSpace = THREE.SRGBColorSpace
   if (repeat) {
@@ -93,14 +97,27 @@ function plyStripes() {
   }, { srgb: true })
 }
 
+// 迭代 14：远景浅中性冷→暖的横向渐变，按 VISUAL.atmosphere.washAlpha 洗墙，
+// 不新增生成 PNG；中点用独立 washMid，不再复用 crowdFallback。
+function colorWash() {
+  return makeTexture(256, (ctx, w, h) => {
+    const g = ctx.createLinearGradient(0, 0, w, 0)
+    g.addColorStop(0, cssHex(A.coolWash))
+    g.addColorStop(0.5, cssHex(A.washMid))
+    g.addColorStop(1, cssHex(A.warmWash))
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, w, h)
+  }, { srgb: true, height: 128 })
+}
+
 function equirectGradient() {
   return makeTexture(256, (ctx, s) => {
     const g = ctx.createLinearGradient(0, 0, 0, s)
-    g.addColorStop(0, '#05080c')
-    g.addColorStop(0.4, '#101a22')
-    g.addColorStop(0.52, '#2a3e46')
-    g.addColorStop(0.68, '#0b1218')
-    g.addColorStop(1, '#04070a')
+    g.addColorStop(0, cssHex(A.equirectTop))
+    g.addColorStop(0.4, cssHex(A.equirectCool))
+    g.addColorStop(0.52, cssHex(A.equirectMid))
+    g.addColorStop(0.68, cssHex(A.equirectWarm))
+    g.addColorStop(1, cssHex(A.equirectBottom))
     ctx.fillStyle = g
     ctx.fillRect(0, 0, s, s)
     const spot = ctx.createRadialGradient(s * 0.5, s * 0.46, 0, s * 0.5, s * 0.46, s * 0.3)
@@ -115,7 +132,7 @@ export function createProceduralMaps() {
   const maps = {
     net: netGrid(), ballStripe: ballStripe(), glow: glowSprite(),
     contact: contactShadow(), micro: fineGrain(), ply: plyStripes(),
-    equirect: equirectGradient(),
+    equirect: equirectGradient(), wash: colorWash(),
   }
   return {
     maps,

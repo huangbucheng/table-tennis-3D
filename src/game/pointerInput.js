@@ -2,7 +2,7 @@ import { CONFIG, INTENT_NONE } from './config.js'
 
 // Pointer Events 输入源：拖拍目标 + 「下一拍意图」单槽。无循环、无 setTimeout。
 // 只依赖 config.js；坐标是屏幕空间线性映射，不做 three.js 3D 拾取。
-const TYPES = new Set(['drive', 'push'])
+const TYPES = new Set(['drive', 'push', 'block'])
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value))
 const usable = (event) =>
   event.pointerId != null &&
@@ -83,9 +83,7 @@ export function createPointerInput(target) {
         return
       }
       if (!TYPES.has(type)) return
-      pending = type === 'drive'
-        ? { type: 'drive', charge: CONFIG.pointer.tapCharge }
-        : { type: 'push', charge: 0 }
+      pending = { type, charge: type === 'drive' ? CONFIG.pointer.tapCharge : 0 }
     },
     consumeIntent() {
       pending = null

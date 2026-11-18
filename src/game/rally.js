@@ -45,8 +45,10 @@ function strikeFrom(ball, side, paddle, rng, config, intent, dt) {
 }
 
 // 推进一个固定物理子步，返回失分信息或 null。hooks 用于触发音效与拖尾等副作用。
-export function advanceSimulation(sim, dt, axes, hooks = {}, intent = INTENT_NONE) {
-  sim.playerPaddle = movePaddle(sim.playerPaddle, axes.x, axes.y, dt, CONFIG.paddle.playerSpeed)
+// options.speed 只由动作模式传入；缺省 / 非法值时仍是迭代 14 的手动步速，逐位不变。
+export function advanceSimulation(sim, dt, axes, hooks = {}, intent = INTENT_NONE, options = {}) {
+  const speed = Number.isFinite(options?.speed) ? options.speed : CONFIG.paddle.playerSpeed
+  sim.playerPaddle = movePaddle(sim.playerPaddle, axes.x, axes.y, dt, speed)
   sim.aiPaddle = updateAiPaddle(sim.aiPaddle, sim.ball, dt, sim.ai)
 
   if (checkPaddleHit(sim.ball, sim.playerPaddle, 'player', sim.rally, CONFIG, dt)) {

@@ -146,6 +146,27 @@ test('clear 应清空键盘与指针两侧状态', () => {
   input.dispose()
 })
 
+test('createGameInput 应把数字键回调透传到键盘输入', () => {
+  const keys = fakeKeys()
+  const pointer = fakePointer()
+  const picked = []
+  const input = createGameInput(keys, pointer, {
+    isActionMode: () => true,
+    onStroke: (key) => picked.push(key),
+  })
+  for (const key of ['1', '2', '3', '4']) keys.emit('keydown', key)
+  assert.deepStrictEqual(picked, ['none', 'drive', 'push', 'block'], `期望透传四个动作，实际 ${picked}`)
+  input.dispose()
+})
+
+test('未传回调时数字键不应产生动作，也不影响既有移动键', () => {
+  const { keys, input } = setup()
+  keys.emit('keydown', '4')
+  keys.emit('keydown', 'd')
+  assert.strictEqual(input.axes({ x: 0, y: 0.98 }).x, 1, '期望既有向右移动仍生效')
+  input.dispose()
+})
+
 test('dispose 应解绑两套输入的全部监听', () => {
   const { keys, pointer, input } = setup()
   assert.strictEqual(keys.total(), 3, '期望键盘绑定 3 类事件')

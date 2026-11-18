@@ -16,8 +16,9 @@ export function usePongGame(containerRef) {
   })
 
   let engine = null
-  // 对手档位归 Vue 侧管理，刻意不进 sessionPayload()（九字段保持不变）。
+  // 对手档位与玩法模式都归 Vue 侧管理，刻意不进 sessionPayload()（九字段保持不变）。
   const aiLevel = ref('standard')
+  const playMode = ref('manual')
 
   const onState = (next) => {
     Object.assign(state, next)
@@ -53,7 +54,15 @@ export function usePongGame(containerRef) {
     const applied = engine?.setAiLevel(level)
     if (applied) aiLevel.value = applied
   }
+  // 引擎失败 / 非法模式时返回 null，此时不更新 UI，避免显示与实际行为不一致。
+  const setPlayMode = (mode) => {
+    const applied = engine?.setPlayMode(mode)
+    if (applied) playMode.value = applied
+  }
   const retry = () => window.location.reload()
 
-  return { state, aiLevel, start, restart, toggleMuted, selectIntent, setAiLevel, retry }
+  return {
+    state, aiLevel, playMode, start, restart, toggleMuted,
+    selectIntent, setAiLevel, setPlayMode, retry,
+  }
 }

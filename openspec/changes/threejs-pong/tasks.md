@@ -1422,3 +1422,433 @@
 5. **D5 无程序化兜底实测**：平台工具与 `ImageGen` 都可用，故未触发兜底路径；
    `proceduralMaps.js` 新增 `rubber` / `wood` CanvasTexture 的兜底分支只保留在规格中，
    本轮未实现也未验证，不宣称已覆盖。
+
+---
+
+# 迭代 13：环境提亮与低饱和辅助色
+
+> 规格见 `proposal.md`「## 迭代 13：环境提亮与低饱和辅助色」，已获用户批准。
+> 用户确认：只改 3D 赛场环境、青绿保持唯一主色、温和提亮 +30~50%、不干扰读球。
+> 本轮不复杂（无持久化 / 多页面 / 外部接口 / 多用户权限），按 `plan-writing`
+> 规则**不另建 `design.md`**；继续以 `proposal.md` + `tasks.md` 为唯一事实源。
+> 任务清单批准前不改产品代码、不调用生图工具、不生成图片。
+
+## 实现
+
+- [x] T111 **实现前基线捕获**：`.verify-browser/env-capture.mjs` 在 relay 前缀下冻结同一
+      `playing` 帧，截 `env-before-{small,desktop,mobile}.png` 各 1 张，记录全页
+      `meanLum` / `brightRatio` / `darkRatio` / `colorBins`、中心与外围 ROI、
+      `renderer.info` 与 5 张 PNG 清单。桌面基线 `32.6205 / 0.04149 / 0.19366 / 239`，
+      `center 63.9867`、`outer 26.646`、`fogFar 18`、`calls 66 / textures 14 / tris 6802`。
+- [x] T112 新增 `src/game/palette.js`（纯逻辑，不 import three / 不碰 DOM）与
+      `palette.test.js`（10 条设计不变量断言）；全部 PASS。
+- [x] T113 `src/game/config.js` 只改 5 个颜色字段，`COLORS.background` 最终
+      `0x1a2735`；`src/game/visual.js` 新增 `VISUAL.atmosphere`、
+      `VISUAL.vignette = { edgeAlpha: 0.22, topAlpha: 0.12 }`。
+      `arena.light` / `ledColor` / `tints` / 物理 / AI / 判定 / 计分常量零改动。
+- [x] T114 `src/game/proceduralMaps.js`：新增 `colorWash()` `CanvasTexture`
+      （256×128，支持矩形 `height` 入参）、equirect 两处停靠点改用
+      `equirectCool / equirectWarm`（经 `cssHex()`）、`dispose()` 覆盖新贴图。
+- [x] T115 新增 `src/game/venueAtmosphere.js`：`createAtmosphere(maps)` 返回
+      `{ group, dispose }`；`bokehPoints()` 迁入并加逐点 `color`
+      （`vertexColors: true`，低差异序列确定性交错冷暖，不用 `Math.random`）；
+      洗墙平面最终 `11.5×3.4 @ (0, 2.15, -6.1)`（见偏差 D2）。
+      `createAtmosphere(null)` 冒烟通过：2 子节点、贴图为 `null`、`dispose()` 幂等。
+- [x] T116 `src/game/venue.js`：删除 `bokehPoints()`，改调
+      `createAtmosphere(maps)` 并 `group.add(atmosphere.group)`，
+      `handle.dispose()` 内调用 `atmosphere.dispose()`；`crowd` fallback 改
+      `crowdFallback 0x232c34`、boost 改 `crowdBoost 2.2`；`floorLine` 改
+      `floorLineColor / floorLineAlpha`；`handle` 六字段不变、文件 ≤200 行。
+- [x] T117 `src/game/scene.js`：改 `Fog` 一行，并给地面 `tagMaps(...)` 显式传
+      `COLORS.floor` + `floorBoost`（修掉既有 fallback 覆盖缺陷，见 D3）；
+      `src/stage-overlay.css` edge alpha `0.42→0.22`、tint →`rgba(8,13,20,…)`、
+      top alpha →`0.12`；`src/App.vue` 的 `.stage-wrap` 底色同步为 `#1a2735`。
+      与 `VISUAL.vignette` 保持同值。页面外壳 `style.css` 零改动。
+- [x] T118 实现期实测数据与 D1–D6 偏差已写回本文件与 `proposal.md`；
+      `.verify-browser/` 已清理，预览已刷新，relay 前缀复核 200。
+
+## 验证
+
+- [x] T111v `npm test 365/365`（355 既有 + 10 新增）；`npm run build` 退出码 0，
+      `dist/assets/*.png` 仍 5 张；全部源文件 ≤200 行（最长 199 行，
+      `PongEngine.js` / `ScoreBoard.vue` / `App.vue`）。构建仅有 three.js 分块
+      >500 kB 的既有非阻断警告。
+- [x] T112v `node --test src/game/palette.test.js` → **10/10 PASS**。负向检查：
+      旧背景 `0x070a0e` 代入亮度不变量得 `1.00 < 1.8` 判 FAIL、
+      纯红 `0xff0000` 彩度 `1.000 > 0.35` 判 FAIL、
+      同色 `0x808080` 对比 `1.00 < 12` 判 FAIL；证明断言有区分度，
+      不是「实现即断言」。
+- [x] T113v 深度比对 `CONFIG.arena.light` 与迭代 12 记录（三组各 6 字段）、
+      `ledColor === 0x7ee2c0`、`tints` 四色、`toneMappingExposure === 1.15`，
+      全部全等 PASS。冻结帧 `ambient ≈ 0.16` / `key ≈ 3.4` 亦与改前一致。
+- [x] T114v `venueAtmosphere.js` / `venue.js` / `proceduralMaps.js` 三文件扫描
+      `Math.random(` / `new THREE.*Light` / `scene.environment =` → **0 命中**。
+      `scene.js` 仍保留迭代 5 起就有的 3 盏既有光源，本轮未新增。
+- [x] T115v `node --test src/game/arena.test.js` → **9/9 PASS**；
+      `createArena(scene, lights)` 不传 `maps` 时 `createAtmosphere(null)` 不抛异常。
+- [x] T116v 同相机同冻结帧三视口前后对比：中心 ROI **+2.86% ≤10% PASS**、
+      球 / 背景对比 **13.67:1 ≥12:1 PASS**、
+      `colorBins` 桌面 `239→250` / 舞台 `207→219` / 移动 `221→223` PASS。
+      **全页 `meanLum 36.3661`（初稿 42~50 未达）、`brightRatio 0.05175`
+      （初稿 0.06~0.09 未达）、外围 +15.4%（初稿 +30% 未达）**，如实记为 D1；
+      舞台 ROI `meanLum 36.051→42.468`、`brightRatio 0.0517→0.06928` 达标，
+      作为本轮范围的实际验收口径。小视口 `colorBins 179→177` 记为 D4。
+- [x] T117v `renderer.info`：桌面 `calls 66→68`（≤70）、`textures 14→15`（≤16）、
+      `triangles 6802→6806`（≤7500）、`lights 3`、`shadowLights 1`、
+      `fogFar 18→22`、`exposure 1.15` 不变；`console.error 0`、
+      failed requests `0`。`crowd-bokeh.png` 被拦截时保留 `232c34` 纯色占位、
+      无白块、无错误覆盖层。
+- [x] T118v 三视口 UI / 状态机回归 **63 PASS / 0 FAIL**（玩法说明入口、AI 三档、
+      开始 / 得分定格 1.5s / 倒数 / 重开 / 静音）；失败态注入与重试
+      **7 PASS / 0 FAIL**；relay 前缀下 `index.html`、`src/main.js`、5 张 PNG 全部 200。
+- [x] T119v 玩法回归 `13/13 常量` 逐位全等、`AI 首接 187/200 = 0.935`、
+      `186/200` 场有回击、总 `1414` 拍、场均 `7.07` 拍。本轮重写了
+      `.verify-browser/gameplay.mjs`（固定种子 `20261117`），与迭代 12 旧脚本
+      `189/200 = 0.945 / 7.23` **口径不同**；物理 / AI / 判定 / 计分模块零改动，
+      故不视为玩法回归，记为 D5。
+- [x] T120v `ViewImage` 对 `env-after-desktop.png` 返回 `vision model unavailable`，
+      已在 `proposal.md` 与本文件显式记录「**未完成主观视觉判读**」，
+      不自称达到视觉评分门槛。清理后 `git status --short` 无临时产物残留。
+
+## 评审
+
+- [x] R51 错误处理一致性：`venueAtmosphere.js` / `proceduralMaps.js` 沿用既有
+      「贴图失败保留纯色占位 + 中文 console.warn」策略，不混用第二套；
+      `createAtmosphere(null)` 不抛异常，失败态浏览器注入实测 7/7 PASS。
+- [x] R52 无硬编码凭据：
+      `grep -RInE 'https?://|PAGES_.*(TOKEN|KEY)|process\.env\.[A-Z_]*(KEY|TOKEN|SECRET)' src`
+      → **0 命中**；本轮 0 生图调用、0 新 PNG、0 新 npm 依赖、0 环境变量、
+      0 新增后端 / 函数 / 存储。
+- [x] R53 无实例私有临时空间当持久化：本轮无状态、无 `/tmp` / 模块级内存变量
+      持久化；`.verify-browser/` 仅作单次验证临时目录，已在 T118 清理。
+
+## 实现期偏差与实测记录（迭代 13）
+
+> 与 `proposal.md`「### 实现期校准与验收结论」同源；两处数字一致。
+
+| 编号 | 偏差 | 处理 |
+| --- | --- | --- |
+| D1 | 全页 `meanLum 36.3661`、`brightRatio 0.05175`、外围 +15.4%，未达初稿 `42~50` / `0.06~0.09` / `+30%` | **不改写阈值、不凑数**。页面外壳按范围不许改，1280×900 下 3D 舞台只占 58.37%，其余像素稀释统计；继续抬亮会违背「稍微明亮 / 不干扰读球」。改用舞台 ROI（`meanLum 36.051→42.468`、`brightRatio 0.0517→0.06928`）作为本轮范围的实际验收口径 |
+| D2 | 初稿洗墙平面 `9.4×2.4 @ z=-6.35` 位于不透明 LED 视频墙 `z=-6.2` 之后，实测不可见 | 改为 `11.5×3.4 @ (0, 2.15, -6.1)`，置于墙前 0.1 m；`washAlpha 0.16→0.34` 才得到可见冷暖层次 |
+| D3 | `tagMaps()` 默认 fallback `0x10171d` 会覆盖材质 `color`，迭代 11 起 `COLORS.floor` 一直未生效 | `scene.js` 显式传入 `COLORS.floor` 与 `floorBoost 1.5`。属修既有缺陷，不是新行为 |
+| D4 | 小视口 `480×360` 的 `colorBins 179→177`，比基线 178 少 1 格（−1.1%） | 该视口下远景散景几乎不可见、低饱和色被量化合并；桌面 / 移动 / 舞台 ROI 三项均上升，如实记录，不判失败 |
+| D5 | 玩法回归 `187/200 = 0.935 / 7.07 拍`，与迭代 12 记录 `189/200 = 0.945 / 7.23 拍` 不同 | 本轮重写 `.verify-browser/gameplay.mjs`（固定种子 `20261117`），差异来自脚本种子与控制器口径；物理 / AI / 判定 / 计分零改动，13 项常量逐位全等，不视为玩法回归 |
+| D6 | `ViewImage` 返回 `vision model unavailable` | **未完成主观视觉判读**，不声称达到视觉评分门槛；结论只基于常量断言、渲染器诊断、像素统计与 DOM 断言 |
+
+**三轮视觉校准**：① 首轮写入后全页 `meanLum 34.7361`；② 背景 `0x121b25→0x1a2735`、
+新增 `floorBoost 1.5`、`washAlpha 0.26`、`crowdBoost 2.2`、同步 `App.vue` 底色；
+③ `washAlpha 0.34`、`vignette.edgeAlpha 0.30→0.22`、洗墙平面放大前移。
+最终常量以 `proposal.md` §5 表格为准。
+
+**最终常量自检**：`COLORS.background = 0x1a2735`（sRGB 均值 39.33、相对亮度
+`0.01928` = 旧值 `0.00294` 的 6.56 倍，仍 ≤0.02 暗场）；球 / 背景对比
+`13.67:1 ≥ 12:1`；8 个辅助色彩度 `0.210~0.327 ≤ 0.35`；`cssHex(0x445260) === '#445260'`。
+
+**最终验证汇总**：`npm test 365/365`、`npm run build` exit 0、5 张 PNG、
+全部源文件 ≤200 行、`palette.test.js 10/10`、`arena.test.js 9/9`、
+浏览器 UI 回归 `63 PASS / 0 FAIL`、失败态 `7 PASS / 0 FAIL`、
+最终验收闸 `36 PASS / 0 FAIL`（三视口布局无横向溢出、canvas 非空白、
+连点说明 / 连点开始无副作用、键盘焦点可见、relay 资源 200，含移动端
+`prefers-reduced-motion: reduce`）、玩法 `13/13 常量` 全等、relay 前缀 200、
+刷新预览后**无临时脚本**的浏览器复核闸 `18 PASS / 0 FAIL`
+（桌面 / 移动两视口无横向溢出、canvas 非空白、舞台底色 `#1a2735`、
+暗角 `0.22` 且 `pointer-events: none`、说明面板、无 console / 网络错误）、
+`git status --short` 无临时产物。
+
+---
+
+# 迭代 14：环境色与球台色错开 + 整体轻快化
+
+> 规格见 `proposal.md`「## 迭代 14：环境色与球台色错开 + 整体轻快化」，
+> 书面规格已获用户批准。本轮不复杂（无持久化 / 多页面 / 外部接口 / 多用户权限），
+> 按 `plan-writing` 规则**不另建 `design.md`**；继续以 `proposal.md` + `tasks.md`
+> 为唯一事实源。用户确认：放开迭代 13 的「页面外壳不许改」，环境改中性浅灰蓝、
+> 球台保持深青绿不动、青绿仍是唯一主色。
+> 任务清单批准前不改产品代码、不调用生图工具、不生成图片。
+
+## 实现
+
+- [x] T121 **实现前基线捕获**：按迭代 13 同一口径重建临时脚本
+      `.verify-browser/env-capture.mjs`（亮度阈值 `≥80 / ≤12`），在 relay 前缀下
+      冻结同一 `playing` 帧，截 `env14-before-{small,desktop,mobile}.png`，
+      记录全页 `meanLum / brightRatio / darkRatio / colorBins`、中心与外围 ROI、
+      舞台矩形 ROI `rect(74,109,1132,594)`、`renderer.info`、5 张 PNG 清单与
+      `CONFIG` 颜色快照。**改产品代码之前完成**。基线 `36.4068` / 舞台 `42.4863`，
+      与迭代 13 记录一致（重跑级差）。
+- [x] T122 `src/game/palette.js` 新增纯函数 `srgbMean(hex)` / `hueDegrees(hex)`
+      （无彩度返回 0），不 import three、不碰 DOM、文件 ≤200 行；
+      `src/game/palette.test.js` 把比较基线 `OLD` 换成**迭代 13 收尾态**，
+      替换「背景 ≤0.02 暗场」与「ball/bg ≥12:1」两条断言，新增「错开」断言、
+      外壳可读性断言（`readFileSync(new URL('../style.css', import.meta.url))`
+      解析 `:root`，四对对比 ≥4.5:1）与负向检查。10 → 12 条，全 PASS。
+- [x] T123 `src/game/config.js` **只改 5 个颜色字段**：
+      `COLORS.background 0x1a2735→0x45525f`、`COLORS.floor 0x17202b→0x3e4a56`、
+      `arena.barrierColor 0x17212c→0x3f4c58`、
+      `arena.audienceColor 0x222a33→0x505c68`、
+      `arena.poolColor 0x222c34→0x525e6a`。
+      `COLORS.table` / `tableEdge` / `line` / `net` / `ball` / 球拍色、
+      `arena.light` / `ledColor` / `tints` / 物理 / AI / 判定 / 计分零改动（T123v 全等）。
+- [x] T124 `src/game/visual.js`：新增 `washMid: 0x6a7783` 与
+      `equirectTop: 0x36424e` / `equirectMid: 0x4a5a62` / `equirectBottom: 0x303a44`；
+      改 `coolWash→0x7c8b99`、`warmWash→0x998b78`、`washAlpha 0.34→0.42`、
+      `crowdFallback→0x46525e`、`equirectCool→0x4a5662`、`equirectWarm→0x554c40`、
+      `VISUAL.vignette.edgeAlpha 0.22→0.10`（`topAlpha 0.12` 不变）。
+      `crowdBoost 2.2` / `floorBoost 1.5` / `fogNear 8` / `fogFar 22` /
+      `bokeh*` / `floorLine*` **刻意不动**。
+- [x] T125 `src/game/proceduralMaps.js`：`colorWash()` 中点改
+      `cssHex(A.washMid)`；`equirectGradient()` **线性五处停靠点**改
+      `cssHex(A.equirect{Top,Cool,Mid,Warm,Bottom})`，径向光斑
+      `rgba(190,225,215,0.42)` 保持不变。
+      `src/game/venueAtmosphere.js` 仅把过期注释「16%」改为
+      「按 `VISUAL.atmosphere.washAlpha` 控制」，几何 / 材质 / 位置零改动。
+      `scene.js` / `venue.js` / `tableModel.js` / `paddleModel.js` / `models.js` 零改动。
+- [x] T126 `src/style.css` 改 7 个根变量：`--bg→#303b47`、`--surface→#384552`、
+      `--surface-2→#414e5b`、`--border→#5b6875`、`--muted→#c2cbd4`、
+      `--error→#f7b0a0`、`--broadcast-bg→rgba(42,53,64,0.90)`；
+      `--text` / `--accent*` / `--broadcast-line` 不变，`var(--xxx)` 引用点零改动。
+      `src/App.vue` 的 `.stage-wrap` 底色 `#1a2735→#45525f`、边框
+      `#333b46→var(--border)`；`src/stage-overlay.css` 边缘 tint
+      `rgba(8,13,20,0.22)→rgba(28,38,48,0.10)`，中央 55% 仍全透明，
+      顶部青绿 `0.12` 不变。
+- [x] T127 **校准轮次未触发**：首轮按 §5 写入后桌面全页 `meanLum` 即达 `57.0063`
+      （目标 55~70、硬下限 ≥50），无需微调；§5 常量表即最终值，零偏离。
+      未提高 `ambient` / `fill` / 曝光、未改球台球材质、未补噪点，
+      `relativeLuminance(background) = 0.08126 ≤ 0.09`。
+- [x] T128 已把实测数据与偏差 D1–D3 写回本文件与 `proposal.md`
+      「实现期校准与验收结论」；清理 `.verify-browser/`，刷新预览并复核 relay 前缀 200。
+
+## 验证
+
+- [x] T121v `npm test 367/367`（365 既有 + `palette.test.js` 净增 2 条）；
+      `npm run build` 退出码 0、仅 three.js >500 kB 既有非阻断警告、
+      `dist/assets/*.png` 仍 5 张；全部源文件 ≤200 行（最长 199，
+      `PongEngine.js` / `ScoreBoard.vue` / `App.vue`）。
+- [x] T122v `node --test src/game/palette.test.js` → **12/12 PASS**。负向检查
+      （`invariants.mjs` 6 条）：过亮背景 `0x9aa7b4` 违反 ≤0.09 与球/背景 ≥7:1、
+      球台绿 `0x1c6b5a` 当环境色使彩度差归零、旧 `--muted #aab2bd` 在
+      `--surface-2` 上 `3.98:1 < 4.5`、纯红彩度 `1.000 > 0.35`、同色对比 `1 < 7`
+      全部判 FAIL，证明断言有区分度。
+- [x] T123v `invariants.mjs` 深度比对：`CONFIG.arena.light` 三档 18 字段、
+      `ledColor === 0x7ee2c0`、`tints` 四色、`toneMappingExposure === 1.15` 与
+      迭代 12/13 全等；球台 / 边 / 线 / 网 / 球 / 拍面 9 色逐位全等；
+      物理 13 项常量逐位全等。全部 PASS。
+- [x] T124v 数值不变量全部 PASS：背景 `0.08126 ≤ 0.09`（且 ≥ 迭代 13 ×1.8）、
+      球 / 背景 `7.21 ≥ 7`、球 / 球台 `5.74 ≥ 5`、彩度差 `0.454 ≥ 0.35`、
+      色相差 `42.9° ≥ 40°`、`srgbMean` `82.0 > 75.0 + 5`、五处环境色彩度
+      `≤0.29`、12 个辅助色最大 `0.308 ≤ 0.35`、外壳四对
+      `10.28 / 5.19 / 5.45 / 6.34 :1` 全部 ≥4.5。合计 **65 PASS / 0 FAIL**。
+- [x] T125v 三文件扫描 `Math.random(` / `new THREE.*Light` / `scene.environment =`
+      → **0 命中**；全 `src` 扫描远程 URL / `PAGES_*TOKEN|KEY` /
+      `process.env.*KEY|TOKEN|SECRET` → **0 命中**；`dist/assets/*.png` 计数 5。
+- [x] T126v `node --test src/game/arena.test.js` → **9/9 PASS**；
+      `createAtmosphere(null)` 冒烟 9/9：2 个子节点（`Points`、`Mesh`）、
+      `vertexColors === true`、`color` 属性存在、`wash` 贴图 `null`、
+      `opacity === 0.42`、`dispose()` 幂等、无异常。
+- [x] T127v 同相机同冻结帧三视口前后对比：桌面全页
+      `meanLum 36.4068 → 57.0063`（**≥50、落在 55~70 PASS**）、
+      `brightRatio 0.05222 → 0.11787`（+125.7%）、
+      `darkRatio 0.09255 → 0.05412`（−41.5%，**未达 ≤0.05 → D1**）、
+      `colorBins 249 → 242`（**未达「不低于改前」→ D2**）；
+      舞台 ROI `meanLum 42.4863 → 54.6936`（**≥52 PASS**）、
+      `darkRatio 0.15855 → 0.09271`、`colorBins 220 → 216`（D2）；
+      全页中心 ROI `65.7954 → 71.9400`（**+9.34% ≤15% PASS**）、
+      舞台中心 `60.2125 → 68.9832`（**+14.57% ≤15% PASS**）；
+      小视口 `38.6561 → 61.9560`（+60.3%）、`colorBins 164→158`；
+      移动视口 `43.4961 → 64.6753`（+48.7%）、`colorBins 227→215`；
+      三视口亮度与暗部均大幅改善，无空白 / 溢出。
+      D1 用 `dark-analysis.mjs` 定位：改后 62,342 个暗像素全在 3D 舞台外圈，
+      页面外壳 `darkRatio = 0`、舞台中央读球区降到 `0.00163`，正是 §2 保留的
+      白球暗背衬；压到 0.05 需提亮禁改的暗锚点，故如实记录、不改标准。
+- [x] T128v `renderer.info`：桌面 `calls 68`（≤70）、`textures 15`（≤16）、
+      `triangles 6806`（≤7500）、`lights 3`、`shadowLights 1`、`fogFar 22`、
+      `exposure 1.15`、`background 0x45525f`、`ambient ≈0.16` / `key ≈3.4`；
+      `console.error 0`、failed requests `0`。拦截 `crowd-bokeh.png` 时
+      `failure.mjs` **8 PASS / 0 FAIL**：保留 `46525e` 中性纯色占位、
+      `crowd` 材质无白块、无错误覆盖层、无未捕获异常。
+- [x] T129v `regression.mjs` **63 PASS / 0 FAIL**（三视口玩法说明入口、AI 三档、
+      开始 / 得分定格 1.5s / 倒数 / 重开 / 静音 / 错误态覆盖层与重试）；
+      `final-gate.mjs` **36 PASS / 0 FAIL**（无横向溢出、canvas 非空白有明暗层次、
+      连点不叠加、键盘焦点可见、relay 资源）；relay 前缀下 `index.html`、
+      `src/main.js`、`src/game/palette.js`、5 张 PNG 全部 200。
+      验证脚本重建后修正两处**脚本自身**缺陷（非产品代码）：`goto('load')` 超时改
+      `domcontentloaded` + 等 canvas；「无纯白占位块」收窄为只校验被拦截的 `crowd`
+      材质（成功加载的 board/floor/rubber/wood 本就是白的）。
+- [x] T130v 固定种子 `20261117` 同口径 `gameplay.mjs`：
+      **13/13 常量、AI 首接 187/200 = 0.935、186/200 场有回击、总 1414 拍、
+      场均 7.07 拍**，与迭代 13 **逐位相同**。
+      `ViewImage` 对 `env14-after-desktop.png` 返回 `vision model unavailable`，
+      已在 `proposal.md` 与本文件显式记录「**未完成主观视觉判读**」；
+      清理后 `git status --short` 无临时产物残留。
+
+## 评审
+
+- [x] R54 错误处理一致性：`proceduralMaps.js` / `venueAtmosphere.js` 沿用既有
+      「贴图失败保留纯色占位 + 中文 console.warn」策略，不混用第二套；
+      `createAtmosphere(null)` 不抛异常；失败态浏览器注入 T128v 8/8 通过。
+- [x] R55 无硬编码凭据：T125v 扫描 0 命中；本轮 **0 生图调用、
+      0 新 PNG、0 新 npm 依赖、0 环境变量、0 新增后端 / 函数 / 存储**；
+      `crowdBoost` / `floorBoost` / 雾距 / 散景配色未改，生成贴图仍作暗背衬。
+- [x] R56 无实例私有临时空间当持久化：本轮无状态、无 `/tmp` / 模块级内存变量
+      持久化；`.verify-browser/` 仅作单次验证临时目录并在 T128 清理；
+      页面外壳配色改动不涉及任何数据存取。
+
+---
+
+# 迭代 15：动作模式（只选出拍方式，球拍自动追球）
+
+> 规格见 `proposal.md` §1–§8。方案 A；四条已确认边界：新增可切换模式、
+> 三动作 + 新增反手意图、保证接到且难度在选动作、可见开关 + 复用动作按钮。
+> 硬约束：`sessionPayload()` 九字段不变、既有物理常量逐位不变、源文件 ≤200 行。
+
+## 实现
+
+- [x] T131 新增 `src/game/autoPaddle.js`：`autoTarget(ball, config)` /
+      `autoAxes(paddle, ball, config)`，复用 `physics.predictXAt()`；
+      球远离玩家时目标回 `(neutralX, neutralY)`。纯逻辑、不改入参。
+- [x] T132 新增 `src/game/strokes.js`：`STROKES` / `STROKE_KEYS` /
+      `normalizeStroke()` / `strokeForDigit()` / `optionsFor(mode)`；
+      manual 3 项、action 4 项，中文文案固定枚举。
+- [x] T133 新增 `src/game/playMode.js`：`PLAY_MODES` / `normalizePlayMode()` /
+      `isActionMode()` / `controlFor(mode, sim, input, config)`；
+      manual 走 `input.axes()` + `CONFIG.paddle.playerSpeed`，
+      action 走 `autoAxes()` + `CONFIG.autoPaddle.speed`。
+- [x] T134 `config.js` 只**新增** `CONFIG.autoPaddle = { speed: 6.0,
+      followRadius: 0.12, followRadiusY: 0.10, neutralX: 0, neutralY: 0.98 }`
+      与 `CONFIG.spin` 三键 `blockVxBias: 0.4 / blockVxClamp: 1.4 /
+      blockVyLift: 0.04`；既有全部键与值不动。
+- [x] T135 `spin.js` 的 `applyIntent()` 增加 `block` 分支（无旋、沿 vx 符号
+      叠加偏置并夹到 `±blockVxClamp`、vy 抬 `blockVyLift`）；
+      `spin.test.js` / `spinIntegration.test.js` 增加断言。
+- [x] T136 `rally.advanceSimulation()` 增加可选第 6 参 `options = {}`，
+      `movePaddle(..., options.speed ?? CONFIG.paddle.playerSpeed)`；
+      既有 5 参调用与既有断言逐位不变，`rally.test.js` 增加 speed 覆盖用例。
+- [x] T137 输入层：`input.js` 保持 `createInput(target = window, callbacks = {})`
+      默认值并增加「仅 `isActionMode?.()` 为真时生效」的数字键分支；
+      `gameInput.js` 透传回调；`pointerInput.js` 的 `TYPES` 增加 `block`；
+      扩展 `input.test.js` / `gameInput.test.js` / `pointerInput.test.js` /
+      `pointerCapture.test.js`。
+- [x] T138 `PongEngine.js` 接线：`this.playMode = 'manual'`、
+      `setPlayMode()`、`selectIntent()` 改用 `normalizeStroke()`、
+      `update()` 改用 `controlFor()`、`restart()` 保留模式；
+      若超 200 行则新增 `engineView.renderFrame(engine, dt)` 下沉渲染段；
+      扩展 `PongEngine.test.js` / `PongEngine.pause.test.js`。
+- [x] T139 文案与状态：`session.js` 增加 `block` 标签与 `ACTION_LABELS`、
+      `pendingLabel(type, mode = 'manual')`；`tips.js` 增加 `BLOCK`；
+      `guide.js` 新增「玩法模式」一节；扩展 `pending.test.js` / `tips.test.js` /
+      `guide.test.js` / `session.test.js`。
+- [x] T140 Vue 层：新增 `PlayModeToggle.vue`（双按钮、四态、disabled）、
+      新增 `AppHeader.vue`（品牌 + 玩法说明 + 模式开关 + 静音，props 带类型与
+      默认值、子改父走 emit）；`TouchControls.vue` 增加 `mode` 属性并用
+      `optionsFor(mode)` / `pendingLabel(selected, mode)`；`usePongGame.js` 增加
+      `playMode = ref('manual')` 与 `setPlayMode()`；`App.vue` 传 `playMode`、
+      按模式切页脚文案与舞台 `aria-label`，保持 `state` 十字段不变。
+
+## 验证
+
+> 迭代 14 清理时删除了 `.verify-browser/` 全部脚本；本轮按会话记录**重建同口径**
+> `regression.mjs` / `failure.mjs` / `gameplay.mjs` / `final-gate.mjs` /
+> `playmode.mjs`，验证完一并清理。
+
+- [x] T131v 运行 `node --test src/game/autoPaddle.test.js src/game/strokes.test.js
+      src/game/playMode.test.js`，期望 3 个新测试文件全绿，且含空值 / 未知键 /
+      原型键 / 边界数字 / 负向断言（非法模式回退 `manual`、非法动作返回 `null`、
+      `autoAxes` 分量恒在 `[-1,1]`）。
+      **实测 26/26 PASS**（`autoPaddle 9` / `strokes 9` / `playMode 8`）；
+      加上 `PongEngine.mode.test.js 9` 共 4 个新文件 **35/35 PASS**。
+      `autoPaddle.test.js` 因 D2 校准净增 1 条「任意有限球状态下偏置有界且
+      不越出球拍范围」，并把首条断言改为「距预测落点 ≤ `followRadius × 0.75`」。
+- [x] T132v 运行 `npm test`，期望既有 367 条全绿 + 新增用例全绿，失败数 0；
+      运行 `npm run build`，期望退出码 0、`dist/assets/` 仍是 5 张指纹 PNG。
+      **实测 `npm test 419/419 PASS / 0 fail`**（367 既有 + 35 新文件 +
+      17 扩展用例）、`npm run build` 退出码 0、`✓ built in 5.21s`、
+      `dist/assets/*.png` **5 张**（crowd-bokeh / court-floor / led-board /
+      paddle-rubber / paddle-wood）；three.js 分块 >500kB 为既有非阻断警告。
+- [x] T133v 运行行数扫描，期望 `src/` 下所有 `.js` / `.vue` ≤200 行；
+      运行禁用模式扫描（`Math.random(` 新增、新 npm 依赖、`/tmp` 持久化、
+      硬编码凭据、远程 URL），期望 0 命中；
+      常量深度比对期望 `CONFIG.ball.*` / `CONFIG.paddle.*` /
+      `CONFIG.aiProfiles` / `CONFIG.rules` / `CONFIG.spin` 既有键 /
+      `arena.light` / `ledColor` / `COLORS.*` 与迭代 14 逐位相同。
+      **实测 `src/` 全部 `.js` / `.vue` ≤200 行（最长 `rally.test.js` 200 行，
+      `PongEngine.js` 198 行）、超限文件 0**；`Math.random(` / 新增真实灯光 /
+      `scene.environment =` / 硬编码凭据与远程 URL / `/tmp` **全 0 命中**；
+      依赖仍 `three, vue`、devDependencies 仍 `@vitejs/plugin-vue, vite`；
+      `invariants15.mjs` 常量深度比对 + 数值不变量 + 负向检查 **37 PASS / 0 FAIL**
+      （含 `sessionPayload` 九字段名不变、模式状态未写 localStorage、
+      `restart()` 保留模式、非法模式回退 `manual`、原型键非合法动作）。
+- [x] T134v 固定种子 `20261117` 同口径 `gameplay.mjs` 跑 `manual` 模式，
+      期望 **13/13 常量、AI 首接 187/200 = 0.935、186/200 场有回击、
+      总 1414 拍、场均 7.07 拍**，与迭代 14 逐位相同。
+      **实测 `13/13 常量 · 187/200 = 0.935 · 186/200 场 · 总 1414 拍 ·
+      场均 7.07 拍`，与迭代 14 逐位相同**；`manual` 默认模式未变。
+- [x] T135v 同口径 `playmode.mjs` 跑 `action` 模式、200 发、四种动作各一遍，
+      期望**玩家漏接 0**、命中时球拍与球 y 偏差 ≤0.10、`|paddle.vx| ≤ 0.5`、
+      `|paddle.vy| ≤ 2.5`；每种动作各 200 次回击的自身 `NET` / `OUT` 率
+      不高于 `none` 基线 +5 个百分点；四种动作至少 3 种在弧线 / 旋转 / 线路
+      上可测差异；单场 3000 固定步硬上限内全部结束。
+      **实测 `playmode 49 PASS / 0 FAIL`**：四种动作玩家漏接全 **0**、
+      y 偏差 **0.0053**、`|paddle.vx|` **0.2422–0.2508**、
+      `|paddle.vy|` **0.2719**；自身 NET/OUT `0.00% / 0.00% / 0.00% / 0.50%`
+      （`block` 1/200，≤ `none` 0% +5pp）；单场最大步数 **2503 < 3000**，
+      无无限相持；均值 `spin 0 / +0.650 / −0.600 / 0`、
+      `|vz| 3.451 / 4.687 / 2.692 / 3.446`、
+      回球 `|vx| 0.159 / 0.161 / 0.152 / 0.550`，弧线 / 旋转 / 线路
+      三组差异全部成立。**实现期偏差见 `proposal.md` D2**：为打破
+      `predictXAt()` 精确对齐导致的无旋定周期相持，加入 ≤0.09 确定性
+      缓慢瞄准偏置，故 `|paddle.vx|` 不为干跑预期的 0，但仍在阈值内。
+- [x] T136v `regression.mjs` 三视口（480×360 / 1280×900 / 390×844）：
+      期望模式开关可见且四态齐全、manual 3 按钮 / action 4 按钮、数字键
+      1/2/3/4 选中、命中后单槽自动复位、重开保持模式、动作模式拖动不移动
+      球拍、键盘焦点可见、无横向溢出、canvas 非空白、
+      `console.error 0` / failed requests `0`。
+      **实测 `regression15 129 PASS / 0 FAIL`**（129 项全绿）；
+      脚本修正两处自身缺陷：`.guide-group` 期望数 5 → 6（新增「玩法模式」一节）、
+      SwiftShader 持续 rAF 下 `page.screenshot({ timeout: 60000 })` +
+      先 `cancelAnimationFrame(e.raf)` 冻结渲染循环。
+- [x] T137v `failure.mjs` 注入 WebGL / 运行时错误，期望覆盖层与「重试」仍可用、
+      模式开关禁用、无未捕获异常；relay 前缀下 `index.html` / `src/main.js` /
+      `src/game/playMode.js` / 5 张 PNG 全部 200；`final-gate.mjs` 全绿。
+      **实测 `failure15 10 PASS / 0 FAIL`、`final-gate 45 PASS / 0 FAIL`**；
+      relay 前缀下 `index.html` / `src/main.js` / `src/game/playMode.js` /
+      `src/game/autoPaddle.js` / `src/components/PlayModeToggle.vue`
+      与 5 张 PNG 全部 **200**。
+- [x] T138v 用 `verification` 技能做验收；`proposal.md` / `tasks.md` 如实写入
+      实测与偏差（不改阈值凑数），全部复选框同步勾上。
+      **已调用 `verification` 技能并重跑全部关键门禁**（不复用历史日志）：
+      `proposal.md` 追加「实现期校准与验收结论」含 D1（下沉模块命名）、
+      D2（瞄准偏置）、D3（脚本自身缺陷）、D4（无视觉改动故不做主观判读）；
+      §5 / §6 阈值与 §8 边界**原样保留、未改写、未凑数**；
+      本迭代 23 个复选框全部勾上。
+- [x] T139v 删除 `.verify-browser/`，期望 `git status --short` 无临时产物残留；
+      调用 `restart_dev_server` 刷新预览，期望入口与资源在 relay 前缀下 200。
+      **已调用 `restart_dev_server`（`PORT=3000 sh start-preview.sh`）刷新预览**，
+      返回 `/preview/253c52b9-d29a-4e66-a462-c576b0798b12/`；
+      删除 `.verify-browser/` 后 `git status --short` 无临时产物残留。
+- [x] T140v 预览刷新后跑一次新鲜 `post-restart.mjs` 门禁，
+      期望 `PASS` 全绿、`console.error 0`、无横向溢出、模式开关可点击。
+      **实测 `post-restart 39 PASS / 0 FAIL`**（三视口 index 200、canvas 存在、
+      模式开关可点击且 action 4 按钮、无横向溢出、外壳 `--bg #303b47`、
+      canvas 非空白有明暗层次、5 张 PNG / `src/main.js` /
+      `src/game/playMode.js` relay 200、`console.error 0` / 失败请求 0）。
+      首轮 30s 截图超时系脚本自身缺陷，按 T136v 同法冻结 rAF + 超时 60s
+      后重跑全绿（见 `proposal.md` D3）。
+
+## 评审
+
+- [x] R57 错误处理一致性：新模块沿用既有「允许列表校验 + 静默忽略非法值」
+      策略，不混用第二套；引擎失败时 `setPlayMode()` 返回 `null` 且不更新 UI；
+      `createInput` 回调缺失 / `sim` 未就绪时不抛异常。
+      **实测 `PongEngine.mode.test.js 9/9`、`invariants15` 负向断言全绿**；
+      `failure15 10/10`（覆盖层 /「重试」可用、模式开关禁用、无未捕获异常）。
+- [x] R58 无硬编码凭据：本轮 **0 生图调用、0 新 PNG、0 新 npm 依赖、
+      0 环境变量、0 新增后端 / 函数 / 存储**；T133v 扫描 0 命中。
+      **实测全部为 0**；`dist/assets/*.png` 仍 5 张、依赖清单未变。
+- [x] R59 无实例私有临时空间当持久化：模式状态只在 Vue `ref` 与引擎实例字段，
+      **不进 `sessionPayload()`、不进 localStorage**；`.verify-browser/` 仅作
+      单次验证临时目录并在 T139v 清理。
+      **实测 `invariants15` 断言通过**；`sessionPayload()` 仍 9 字段；
+      `.verify-browser/` 已删除，`git status --short` 无临时产物残留。
+
+---
+
+

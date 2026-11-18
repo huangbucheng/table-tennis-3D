@@ -4,8 +4,8 @@ import { createPointerInput } from './pointerInput.js'
 
 // 输入源组合器：对 PongEngine 伪装成原来的 createInput，让它不感知有几套输入。
 // 键盘与指针并存，指针的拖拍目标和预设意图优先，键盘仍是完整的回退路径。
-export function createGameInput(keyboardTarget, pointerTarget) {
-  const keyboard = createInput(keyboardTarget)
+export function createGameInput(keyboardTarget, pointerTarget, callbacks = {}) {
+  const keyboard = createInput(keyboardTarget, callbacks)
   const pointer = createPointerInput(pointerTarget)
 
   return {

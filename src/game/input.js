@@ -1,4 +1,5 @@
 import { CONFIG, INTENT_NONE } from './config.js'
+import { strokeForDigit } from './strokes.js'
 
 const LEFT = ['arrowleft', 'a']
 const RIGHT = ['arrowright', 'd']
@@ -8,7 +9,7 @@ const SPACE = ' '
 const SHIFT = 'shift'
 const GAME_KEYS = new Set([...LEFT, ...RIGHT, ...UP, ...DOWN, SPACE, SHIFT])
 
-export function createInput(target = window) {
+export function createInput(target = window, callbacks = {}) {
   const pressed = new Set()
   let charge = 0
 
@@ -21,7 +22,14 @@ export function createInput(target = window) {
   }
 
   const onKeyDown = (event) => {
-    const key = event.key.toLowerCase()
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : ''
+    // 数字键只在动作模式生效；手动模式连 preventDefault 都不触发，既有行为逐位不变。
+    const stroke = callbacks.isActionMode?.() ? strokeForDigit(key) : null
+    if (stroke) {
+      callbacks.onStroke?.(stroke)
+      event.preventDefault()
+      return
+    }
     if (!GAME_KEYS.has(key)) return
     pressed.add(key)
     event.preventDefault()

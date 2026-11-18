@@ -22,6 +22,11 @@ test('push 应返回搓短下旋文案', () => {
     '期望搓短文案')
 })
 
+test('block 应返回反手推挡文案', () => {
+  assert.strictEqual(tipFor({ type: 'block', charge: 0 }), '反手推挡 · 平击压线',
+    '期望反手推挡文案')
+})
+
 test('none 意图不应显示提示', () => {
   assert.strictEqual(tipFor({ type: 'none', charge: 0 }), '', '期望空字符串')
 })

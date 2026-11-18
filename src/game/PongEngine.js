@@ -8,6 +8,9 @@ import { ServeClock } from './serveClock.js'
 import { createSessionState, sessionPayload, pointResult, frameHooks } from './session.js'
 import { advanceSimulation, createSimulation, prepareServe, serveSimulation } from './rally.js'
 import { MESSAGES, applyAiLevel } from './matchSettings.js'
+import { controlFor, normalizePlayMode } from './playMode.js'
+import { normalizeStroke } from './strokes.js'
+import { tickFrame } from './engineFrame.js'
 
 export class PongEngine {
   constructor(container, callbacks = {}) {
@@ -28,9 +31,10 @@ export class PongEngine {
     this.trail = createTrail(this.view.scene)
     this.particles = createParticles(this.view.scene)
     this.audio = createAudio()
-    this.input = createGameInput(window, container)
+    this.input = createGameInput(window, container, { isActionMode: () => this.playMode === 'action', onStroke: (type) => this.selectIntent(type) })
     this.sim = createSimulation()
     this.state = createSessionState()
+    this.playMode = 'manual'
     this.serveClock = new ServeClock()
     this.accumulator = this.pauseRemaining = this.lastTime = 0
 
@@ -53,19 +57,7 @@ export class PongEngine {
     try {
       const dt = this.lastTime ? Math.min((now - this.lastTime) / 1000, 0.1) : 0
       this.lastTime = now
-      this.accumulator += dt
-      let steps = 0
-      while (this.accumulator >= CONFIG.fixedDt && steps < CONFIG.maxSubsteps) {
-        this.update(CONFIG.fixedDt)
-        this.accumulator -= CONFIG.fixedDt
-        steps += 1
-      }
-      if (steps === CONFIG.maxSubsteps) this.accumulator = 0
-      this.particles.update(dt)
-      this.view.arena?.step(dt)
-      this.trail.update()
-      syncMeshes(this.view, this.sim)
-      this.view.renderer.render(this.view.scene, this.view.camera)
+      tickFrame(this, dt)
     } catch {
       this.fail(MESSAGES.runtime)
     }
@@ -91,9 +83,8 @@ export class PongEngine {
     if (this.state.phase !== 'playing') return
 
     this.input.tick(dt)
-    const intent = this.input.intent()
-    const axes = this.input.axes(this.sim.playerPaddle)
-    const result = advanceSimulation(this.sim, dt, axes, frameHooks(this), intent)
+    const control = controlFor(this.playMode, this.sim, this.input)
+    const result = advanceSimulation(this.sim, dt, control.axes, frameHooks(this), control.intent, { speed: control.speed })
     if (result) this.award(result.foul.winner, result.foul.reason, result.position)
   }
 
@@ -104,10 +95,18 @@ export class PongEngine {
   }
 
   selectIntent(type) {
-    if (this.failed || !['none', 'drive', 'push'].includes(type)) return
-    this.state.pending = type
-    this.input.setPendingIntent(type)
+    const stroke = this.failed ? null : normalizeStroke(type)
+    if (!stroke) return
+    this.state.pending = stroke
+    this.input.setPendingIntent(stroke)
     this.emit()
+  }
+
+  setPlayMode(mode) {
+    if (this.failed) return null
+    this.playMode = normalizePlayMode(mode)
+    this.selectIntent('none')
+    return this.playMode
   }
 
   serve() {

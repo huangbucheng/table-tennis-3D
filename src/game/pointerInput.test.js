@@ -180,6 +180,14 @@ test('clear 应同时清掉拖拍目标与预设', () => {
   input.dispose()
 })
 
+test('反手推挡应写入无蓄力的 block 意图', () => {
+  const input = createPointerInput(fakeTarget())
+  input.setPendingIntent('block')
+  assert.deepStrictEqual(input.intent(), { type: 'block', charge: 0 },
+    `期望 block 意图，实际 ${JSON.stringify(input.intent())}`)
+  input.dispose()
+})
+
 test('dispose 应解绑全部指针监听', () => {
   const target = fakeTarget()
   const input = createPointerInput(target)

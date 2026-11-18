@@ -1,11 +1,21 @@
 // 会话状态的构造、下发与文案，纯逻辑；把 PongEngine 的样板代码下沉到这里。
 import { tipFor } from './tips.js'
 import { applyPoint, isDeuce, isGameOver, serverFor } from './scoring.js'
+import { normalizePlayMode } from './playMode.js'
 
 const PENDING_LABELS = {
   none: '下一拍：普通回击',
   drive: '已备好：上旋快攻（下一拍）',
   push: '已备好：搓短下旋（下一拍）',
+  block: '已备好：反手推挡（下一拍）',
+}
+
+// 动作模式用专业动作名，手动模式沿用既有文案；两表都是固定枚举，不拼接输入。
+const ACTION_LABELS = {
+  none: '下一拍：普通回击',
+  drive: '已备好：正手攻球（下一拍）',
+  push: '已备好：搓短（下一拍）',
+  block: '已备好：反手推挡（下一拍）',
 }
 
 export function createSessionState() {
@@ -57,10 +67,10 @@ export function pointResult(state, winner, reason) {
 }
 
 // 固定文案枚举；未知 / 原型键等输入返回空串，不拼接用户输入。
-export function pendingLabel(type) {
-  return typeof type === 'string' && Object.hasOwn(PENDING_LABELS, type)
-    ? PENDING_LABELS[type]
-    : ''
+// mode 缺省为手动模式，保证既有调用与既有断言逐位不变。
+export function pendingLabel(type, mode = 'manual') {
+  const table = normalizePlayMode(mode) === 'action' ? ACTION_LABELS : PENDING_LABELS
+  return typeof type === 'string' && Object.hasOwn(table, type) ? table[type] : ''
 }
 
 // 每帧的模拟回调工厂。玩家命中时消费「下一拍意图」并清空展示状态；AI 命中不动它。

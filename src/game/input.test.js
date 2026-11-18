@@ -34,6 +34,26 @@ test('按住 A 键应产生向左的输入轴', () => {
   input.dispose()
 })
 
+test('动作模式数字键应回调选动作并阻止默认行为', () => {
+  const target = fakeTarget()
+  const picked = []
+  const input = createInput(target, { isActionMode: () => true, onStroke: (key) => picked.push(key) })
+  for (const key of ['1', '2', '3', '4']) target.emit('keydown', key)
+  assert.deepStrictEqual(picked, ['none', 'drive', 'push', 'block'], `期望四个动作，实际 ${picked}`)
+  assert.strictEqual(target.prevented(), 4, '期望四次 preventDefault')
+  input.dispose()
+})
+
+test('手动模式数字键不应回调也不应阻止默认行为', () => {
+  const target = fakeTarget()
+  const picked = []
+  const input = createInput(target, { isActionMode: () => false, onStroke: (key) => picked.push(key) })
+  target.emit('keydown', '4')
+  assert.deepStrictEqual(picked, [], '期望手动模式不触发动作')
+  assert.strictEqual(target.prevented(), 0, '期望手动模式不阻止默认行为')
+  input.dispose()
+})
+
 test('松开按键后输入轴应归零', () => {
   const target = fakeTarget()
   const input = createInput(target)

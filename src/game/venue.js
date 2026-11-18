@@ -3,6 +3,9 @@
 import * as THREE from 'three'
 import { CONFIG } from './config.js'
 import { VISUAL, tagMaps } from './visual.js'
+import { createAtmosphere } from './venueAtmosphere.js'
+
+const AT = VISUAL.atmosphere
 
 function lampHeadGeometry() {
   const points = [
@@ -11,21 +14,6 @@ function lampHeadGeometry() {
     new THREE.Vector2(0.09, 0.2), new THREE.Vector2(0.03, 0.24),
   ]
   return new THREE.LatheGeometry(points, VISUAL.beam.headSegments)
-}
-
-function bokehPoints(material) {
-  const count = VISUAL.glow.bokehCount
-  const positions = new Float32Array(count * 3)
-  for (let i = 0; i < count; i += 1) {
-    const t = i / count
-    const row = i % 3
-    positions[i * 3] = -4.6 + ((i * 0.618033) % 1) * 9.2
-    positions[i * 3 + 1] = 0.85 + row * 0.34 + ((i * 0.371) % 1) * 0.22
-    positions[i * 3 + 2] = -4.35 - row * 0.56 - 0.5 * Math.abs(t - 0.5)
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  return new THREE.Points(geo, material)
 }
 
 export function createVenue(scene, maps = null) {
@@ -45,7 +33,7 @@ export function createVenue(scene, maps = null) {
   }), { map: 'led', emissiveMap: 'led' })
   const crowd = tagMaps(new THREE.MeshBasicMaterial({
     color: 0xffffff, toneMapped: false, side: THREE.DoubleSide,
-  }), { map: 'crowd' }, 0x10171d, 1.7)
+  }), { map: 'crowd' }, AT.crowdFallback, AT.crowdBoost)
   const rig = new THREE.MeshStandardMaterial({ color: 0x222a32, roughness: 0.85 })
   const steel = new THREE.MeshStandardMaterial({
     color: 0x4a555e, roughness: VISUAL.material.steel.roughness,
@@ -62,13 +50,10 @@ export function createVenue(scene, maps = null) {
   })
   const audience = new THREE.MeshStandardMaterial({ color: A.audienceColor, roughness: 1 })
   const floorLine = new THREE.MeshBasicMaterial({
-    color: A.ledColor, transparent: true, opacity: 0.1, depthWrite: false, toneMapped: false,
+    color: AT.floorLineColor, transparent: true, opacity: AT.floorLineAlpha,
+    depthWrite: false, toneMapped: false,
   })
-  const glowMat = new THREE.PointsMaterial({
-    color: 0xbfe8dc, map: maps?.glow ?? null, size: VISUAL.glow.spriteSize,
-    transparent: true, opacity: 0.68, depthWrite: false,
-    blending: THREE.AdditiveBlending, toneMapped: false,
-  })
+  const atmosphere = createAtmosphere(maps)
 
   const add = (geometry, material, x, y, z) => {
     const mesh = new THREE.Mesh(geometry, material)
@@ -120,7 +105,7 @@ export function createVenue(scene, maps = null) {
     add(new THREE.PlaneGeometry(9.4, 1.15), crowd,
       0, 0.85 + row * 0.34, -4.3 - row * 0.56)
   }
-  group.add(bokehPoints(glowMat))
+  group.add(atmosphere.group)
   add(new THREE.PlaneGeometry(9.4, 2.1), board, 0, 2.15, -6.2)
 
   // 桁架：横梁 + 立柱 + 斜撑 + 车削灯头 + 灯头光晕。
@@ -176,6 +161,7 @@ export function createVenue(scene, maps = null) {
     led, cone, pool, tintMaterials: [led, board], group,
     dispose() {
       scene.remove(group)
+      atmosphere.dispose()
       handle.led = null
       handle.cone = null
       handle.pool = null

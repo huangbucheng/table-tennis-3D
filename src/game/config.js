@@ -57,6 +57,15 @@ export const CONFIG = {
     followRadiusY: 0.1,
     tapCharge: 0.65,
   },
+  // 迭代 15 动作模式：专用追球步速（高于手动 3.2，给快球与高度跟踪留余量）。
+  // 全部是新键；手动模式仍读 paddle.playerSpeed，既有数值一律不动。
+  autoPaddle: {
+    speed: 6.0,
+    followRadius: 0.12,
+    followRadiusY: 0.10,
+    neutralX: 0,
+    neutralY: 0.98,
+  },
   // 归一化旋转：正上旋、负下旋。只影响竖直加速度与落台后的水平速度。
   spin: {
     // 三项经「过网 + 首落点在对方半台」验收断言校准：0.55/0.55/0.02 让满蓄力
@@ -69,6 +78,10 @@ export const CONFIG = {
     driveVyDrop: 0.02,
     pushVzScale: 0.78,
     pushVyLift: 0.14,
+    // 迭代 15 反手推挡：无旋、沿既有横向速度方向叠加偏置（与 returnVxClamp 同源）。
+    blockVxBias: 0.4,
+    blockVxClamp: 1.4,
+    blockVyLift: 0.04,
   },
   rules: {
     winScore: 11,
@@ -88,11 +101,12 @@ export const CONFIG = {
     pulseDecay: 0.12,
     pulseKey: 1.4,
     pulseLed: 0.5,
-    barrierColor: 0x0a0e13,
-    audienceColor: 0x0c1118,
+    // 迭代 14：环境色抬到中明度中性浅灰蓝，与深青绿球台错开；ledColor 与 light 向量刻意不动。
+    barrierColor: 0x3f4c58,
+    audienceColor: 0x505c68,
     ledColor: 0x7ee2c0,
     beamColor: 0xdfe9f2,
-    poolColor: 0x0e151c,
+    poolColor: 0x525e6a,
     tints: {
       default: 0x7ee2c0,
       match: 0xffd479,
@@ -112,8 +126,10 @@ export const CONFIG = {
 export const INTENT_NONE = Object.freeze({ type: 'none', charge: 0 })
 
 export const COLORS = {
-  background: 0x070a0e,
-  floor: 0x0c1117,
+  // 迭代 14：背景 / 地面抬到 sRGB 均值 82 / 74 的中性浅灰蓝，与深青绿球台错开；
+  // 球 / 背景仍有 ≥7:1 对比，且背景相对亮度 ≤0.09，避免吃掉白球。
+  background: 0x45525f,
+  floor: 0x3e4a56,
   table: 0x1c6b5a,
   tableEdge: 0x14202a,
   line: 0xf5f3ee,

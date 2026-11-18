@@ -44,16 +44,39 @@ export const VISUAL = Object.freeze({
     capColor: 0x171d23,
     capRoughness: 0.6,
   }),
+  // 迭代 14：远景氛围的唯一常量源。青绿仍是唯一主色，这里只放低饱和中性色。
+  // 彩度受 palette.test.js 的 (max-min)/max ≤ 0.35 约束；boost / 雾距 / 散景刻意不动。
+  atmosphere: Object.freeze({
+    coolWash: 0x7c8b99,
+    warmWash: 0x998b78,
+    washMid: 0x6a7783,
+    washAlpha: 0.42,
+    bokehCool: 0xa9c2d6,
+    bokehWarm: 0xdcc19e,
+    bokehWarmRatio: 0.38,
+    floorLineColor: 0xcbb893,
+    floorLineAlpha: 0.12,
+    crowdBoost: 2.2,
+    floorBoost: 1.5,
+    equirectTop: 0x36424e,
+    equirectCool: 0x4a5662,
+    equirectMid: 0x4a5a62,
+    equirectWarm: 0x554c40,
+    equirectBottom: 0x303a44,
+    crowdFallback: 0x46525e,
+    fogNear: 8,
+    fogFar: 22,
+  }),
   env: Object.freeze({ intensity: 0.24 }),
   glow: Object.freeze({ spriteSize: 0.14, bokehCount: 132, headSize: 0.52 }),
   shadow: Object.freeze({ size: 0.18, opacity: 0.4 }),
   beam: Object.freeze({ coneSegments: 28, headSegments: 20, legSegments: 16 }),
   // CSS 无法 import JS；stage-overlay.css 中的两个 alpha 与此处保持同值。
-  vignette: Object.freeze({ edgeAlpha: 0.42, topAlpha: 0.1 }),
+  vignette: Object.freeze({ edgeAlpha: 0.10, topAlpha: 0.12 }),
 })
 
-// 标记「生成贴图加载完成后再赋值」的材质槽位；加载前用深色纯色占位，
-// 加载失败就一直保持深色，绝不出现白色空板。material.color 在贴图就绪后回到
+// 标记「生成贴图加载完成后再赋值」的材质槽位；加载前用中性纯色占位，
+// 加载失败就一直保持纯色，绝不出现白色空板。material.color 在贴图就绪后回到
 // baseColor（默认白色，让贴图自身亮度成为唯一来源）；baseColor 用于球拍单主色。
 // userData 是 three 官方保留字段，不触碰 DOM。
 export function tagMaps(material, slots, fallback = 0x10171d, boost = 1, baseColor = 0xffffff) {

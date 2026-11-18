@@ -1,18 +1,19 @@
 <script setup>
 import { computed } from 'vue'
 import { pendingLabel } from '../game/session.js'
+import { optionsFor } from '../game/strokes.js'
 
 const props = defineProps({
   selected: { type: String, default: 'none' },
+  mode: { type: String, default: 'manual' },
 })
 const emit = defineEmits(['select'])
 
-const options = [
-  { type: 'none', label: '普通回击' },
-  { type: 'drive', label: '上旋快攻' },
-  { type: 'push', label: '搓短下旋' },
-]
-const label = computed(() => pendingLabel(props.selected))
+const options = computed(() => optionsFor(props.mode))
+const label = computed(() => pendingLabel(props.selected, props.mode))
+const hint = computed(() => props.mode === 'action'
+  ? '按 1 / 2 / 3 / 4 或用按钮选下一拍，命中后自动回到普通回击'
+  : '选一次只作用于下一拍，命中后自动回到普通回击')
 </script>
 
 <template>
@@ -20,18 +21,19 @@ const label = computed(() => pendingLabel(props.selected))
     <div class="intent-buttons" role="group" aria-label="选择下一拍击球技术">
       <button
         v-for="option in options"
-        :key="option.type"
+        :key="option.key"
         type="button"
         class="intent-btn"
-        :class="{ 'is-selected': props.selected === option.type }"
-        :aria-pressed="props.selected === option.type"
-        @click="emit('select', option.type)"
+        :class="{ 'is-selected': props.selected === option.key }"
+        :aria-pressed="props.selected === option.key"
+        @click="emit('select', option.key)"
       >
+        <span v-if="option.digit" class="digit" aria-hidden="true">{{ option.digit }}</span>
         {{ option.label }}
       </button>
     </div>
     <p class="pending-hint" aria-live="polite">{{ label }}</p>
-    <p class="controls-hint">选一次只作用于下一拍，命中后自动回到普通回击</p>
+    <p class="controls-hint">{{ hint }}</p>
   </div>
 </template>
 
@@ -79,6 +81,18 @@ const label = computed(() => pendingLabel(props.selected))
   outline-offset: 2px;
 }
 
+.digit {
+  display: inline-block;
+  min-width: 20px;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(245, 243, 238, 0.16);
+  color: #ffd479;
+  font-size: 14px;
+  line-height: 20px;
+}
+
 .pending-hint {
   margin: 8px 0 0;
   min-height: 24px;
@@ -95,7 +109,13 @@ const label = computed(() => pendingLabel(props.selected))
 @media (max-width: 640px) {
   .intent-btn {
     min-width: 0;
-    padding: 8px 12px;
+    padding: 8px 8px;
+  }
+
+  .digit {
+    min-width: 18px;
+    margin-right: 2px;
+    padding: 0 2px;
   }
 }
 </style>

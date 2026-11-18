@@ -2093,3 +2093,856 @@ paddleProfile.js（纯数值）
 - **未完成项**：`ViewImage` 对前后近景截图均不可用，**未完成主观视觉判读**；
   本轮不声称达到官方视觉评分门槛，结论只基于几何断言、渲染器诊断、像素统计与 DOM 断言。
   程序化兜底分支本轮未触发、未实现、未验证，不宣称已覆盖。
+
+---
+
+## 迭代 13：环境提亮与低饱和辅助色（独立小迭代）
+
+> 本轮不复杂（无持久化 / 多页面 / 外部接口 / 多用户权限），按 `plan-writing`
+> 规则**不另建 `design.md`**；继续以 `proposal.md` + `tasks.md` 为唯一事实源。
+> 任务清单批准前不改产品代码、不调用生图工具、不生成图片。
+
+### 1. 问题与量化目标
+
+用户反馈：「环境整体背景有点太暗了，能否让环境稍微明亮多彩一点，但又不会对游戏造成干扰」。
+原句「但又只会对游戏造成干扰」按笔误理解为「但**不**会对游戏造成干扰」，已在澄清中确认。
+
+暗的来源共 6 处叠加：`scene.background` 与雾、地面、围挡 / 观众席 / 光池、
+极低的 `ambient 0.16` / `fill 0.12`、5 张近黑底生成贴图、`stage-overlay.css` 暗角。
+
+| 指标 | 当前（迭代 11/12 实测或本次核算） | 目标 |
+| --- | --- | --- |
+| `COLORS.background` | `0x070a0e`，sRGB 均值 10.3，相对亮度 0.00294 | sRGB 均值 30~40 |
+| `COLORS.floor` | `0x0c1117`，17.3 | 28~36 |
+| 围挡 / 观众席 / 光池 | `0x0a0e13` / `0x0c1118` / `0x0e151c`，14~21 | 28~44 |
+| 全页 `meanLum`（桌面 1280×900） | 33.01（迭代 11 口径）/ 32.6205（本轮同脚本重测） | 初稿目标 **42~50（+30~50%）** |
+| `brightRatio` | 0.0365（迭代 11 口径）/ 0.04149（本轮重测） | 初稿目标 **0.06~0.09** |
+| 球 / 背景对比 | 17.89:1 | **≥ 12:1** |
+| CSS 暗角边缘 alpha | 0.42 | 0.22 |
+
+> 实现期校准：初稿的「全页」两条绝对阈值建立在一个错误假设上 —— 页面外壳
+> （`style.css` / HUD / 记分条）按 §2 明确不改，而 1280×900 下 3D 舞台只占整页
+> **58.37%** 面积，未改的页面外壳会稀释全页统计。本轮**不改写阈值、也不靠继续抬亮
+> 画面去凑数**，而是把 3D 舞台矩形 ROI 作为本轮范围的验收口径，并把全页未达标如实记为
+> 偏差 D1。背景目标区间、暗角目标值与 §5 数值以文末「实现期校准与验收结论」为准。
+
+### 2. 已确认边界
+
+| 项 | 决定 |
+| --- | --- |
+| 范围 | **只改 3D 赛场环境**：背景 / 雾、地面、围挡、观众席、光池、LED 广告带、散景、灯光配色层。页面外壳（`style.css` 的 `--bg` / `--surface`）、HUD、记分条、说明面板、按钮、页脚保持原样 |
+| CSS 暗角 | 视为「3D 画面呈现层」：`stage-overlay.css` 只覆盖 canvas、`pointer-events: none`、不盖 HUD，故纳入本轮；不改任何页面外壳规则 |
+| 色彩 | **青绿 `0x7ee2c0` 仍是唯一主色**；蓝紫 / 暖金只作为远景低饱和辅助层，球台中央保持中性深灰。遵守「单主色 + 中性灰阶」规范，不启用第二主色 |
+| 提亮幅度 | **温和 +30~50%**（推荐档）；不做 +70~100% 的明显提亮 |
+| 「不干扰」 | 指读球：球与球台的可辨识度不下降，且 playing 期间不能有动态亮度变化 |
+
+### 3. 三条硬约束
+
+1. **playing 期间灯光目标向量恒定**：`CONFIG.arena.light.{READY,PLAYING,GAMEOVER}` 的六个数值字段一字不改；`arenaState.js` / `arena.js` / `PongEngine.js` 不改；`toneMappingExposure = 1.15` 不改；**不新增任何真实光源**（`arena.test.js` 的「0 盏新增光源」断言必须继续通过）。不靠提高 `ambient` / `fill` / 曝光来凑亮度。
+2. **球台中央不新增高亮或高对比彩色元素**：球、球台、球拍、网、白色边线的材质与颜色一律不改；提亮只发生在外围与远景（围挡、观众席、地面边缘、远端视频墙、散景、暗角）。冻结同一 `playing` 帧对比时，中央 ROI 平均亮度相对迭代 12 变化 **≤ 10%**。
+3. **`ledColor` 与 cue 通路不变**：`CONFIG.arena.ledColor` 保持 `0x7ee2c0`（`arena.test.js` 依此定位 LED 材质）；`tints` 四色不改；新增远景层**完全不接入** `createArena` 的 cue / tint 驱动，因此不会随时间或比分波动。
+
+### 4. 方案选择
+
+| 方案 | 做法 | 优点 | 代价 / 风险 | 结论 |
+| --- | --- | --- | --- | --- |
+| **A 常量 + 程序化远景层（推荐）** | 改 5 个颜色常量与雾距；新增 1 张程序化冷→暖渐变 `CanvasTexture`；散景改双色逐点着色；减轻暗角；`crowd` 贴图亮度增益 1.7→**2.2**、`floor` 增益 **1.5** | 0 新生成 PNG、0 新依赖、0 新光源；全部可纯逻辑单测；预算仅 +2 draw calls / +1 texture | 「多彩」靠层次而非大色块，需要手工调色值 | **采用** |
+| B 重做生成贴图 | 用平台 `mcp__media__generate_image` 重做 `led-board` / `crowd-bokeh` / `court-floor` 三张更亮更多彩的 PNG | 表面层次最丰富 | +3~4 MB、5→8 张 PNG 逼近 8 MB 预算；需生图调用；近黑底约束被打破后要重新校验读球 | 不采用 |
+| C 调灯光 / 曝光 | 提高 `ambient` / `fill` 或 `toneMappingExposure`，加彩色补光 | 改动最小 | 会同时抬亮球台与球，与「playing 目标恒定」冲突，压低网 / 球对比，可玩性风险最高 | 不采用 |
+
+### 5. 配色与数据流
+
+`config.js` **只改下表 5 个颜色字段**，物理 / AI / 判定 / 计分 / 灯光 cue 数值零改动：
+
+| 字段 | 改前 | 改后 | 用途 |
+| --- | --- | --- | --- |
+| `COLORS.background` | `0x070a0e` | `0x1a2735` | `scene.background` + `Fog` 颜色 |
+| `COLORS.floor` | `0x0c1117` | `0x17202b` | 地面材质 |
+| `arena.barrierColor` | `0x0a0e13` | `0x17212c` | 四面围挡 |
+| `arena.audienceColor` | `0x0c1118` | `0x222a33` | 近景座席剪影 |
+| `arena.poolColor` | `0x0e151c` | `0x222c34` | 地面光池 |
+
+雾改为 `new THREE.Fog(COLORS.background, 8, 22)`（`far 18→22`，让远景不更早塌进背景色）。
+
+辅助色全部进 `visual.js` 的 `VISUAL.atmosphere`（纯数据，不 import three、不碰 DOM）：
+
+| 键 | 值 | 说明 |
+| --- | --- | --- |
+| `coolWash` / `warmWash` | `0x445260` / `0x6a5a48` | 远景洗墙渐变两端，低饱和蓝灰 / 暖褐 |
+| `washAlpha` | `0.34` | 洗墙平面不透明度 |
+| `bokehCool` / `bokehWarm` | `0xa9c2d6` / `0xdcc19e` | 散景逐点双色 |
+| `bokehWarmRatio` | `0.38` | 暖色点占比，按索引确定性交错，不用 `Math.random` |
+| `floorLineColor` / `floorLineAlpha` | `0xcbb893` / `0.12` | 地面暖金细线（替换原青绿细线） |
+| `crowdBoost` | `2.2` | `crowd` 贴图亮度增益（旧 1.7，单测上限 2.2） |
+| `floorBoost` | `1.5` | 地面生成贴图的亮度增益；让 `COLORS.floor` 真正接线（见下） |
+| `equirectCool` / `equirectWarm` | `0x2c3741` / `0x3b352d` | 环境反射渐变两端，只作用于 `metalness ≥ 0.5` 金属件 |
+| `crowdFallback` | `0x232c34` | `crowd` 贴图未就绪时的纯色占位（旧 `0x10171d`） |
+| `fogNear` / `fogFar` | `8` / `22` | 雾距单一真源 |
+
+颜色统一以数值 hex 存储；`proceduralMaps.js` 需要 CSS 颜色字符串时用
+`cssHex(hex)` 转换，避免同一色值在 JS 与 CSS 里各写一份。
+「低饱和」的可测定义：sRGB 三通道满足 `(max−min)/max ≤ 0.35`。上表全部辅助色满足。
+
+`VISUAL.vignette` 更新为 `{ edgeAlpha: 0.22, topAlpha: 0.12 }`（旧 `0.42 / 0.1`）；
+`stage-overlay.css` 与之保持同值，边缘 tint 由 `rgba(4,7,11,…)` 放宽为 `rgba(8,13,20,…)`。
+
+模块职责与数据流：
+
+```
+config.js / visual.js（纯数据）
+  → scene.js（背景 / 雾 / 地面 / 灯光 / 球台 / 球拍 / 球）
+  → createVenue() → createAtmosphere(maps)（远景洗墙 + 双色散景）
+  → createArena()（cue 驱动 LED / 光锥 / 光池，handle 形状不变）
+  → generatedMaps.bind(scene)（异步贴图）
+```
+
+- **`src/game/palette.js`（新增，纯逻辑，≤200 行）**：`relativeLuminance(hex)`、
+  `contrastRatio(a, b)`、`chromaRatio(hex)`、`cssHex(hex)`。不 import three、不访问 DOM。
+- **`src/game/palette.test.js`（新增）**：只断言**设计不变量**，不写「等于当前常量」的
+  实现式断言 —— 新背景相对亮度 ≥ 旧背景 `0x070a0e` 的 1.8 倍且 ≤ 0.02；
+  `contrastRatio(COLORS.ball, COLORS.background) ≥ 12`；5 个环境色均亮于改前；
+  `VISUAL.atmosphere` 中全部色值（含 `crowdFallback` 与两处 equirect 停靠点）
+  `chromaRatio ≤ 0.35`；`crowdBoost ∈ [1.7, 2.2]`；
+  `vignette.edgeAlpha < 0.42`；`fogNear === 8` 且 `fogFar > 18`。
+  改暗背景、调高彩度或恢复暗角都会失败。
+- **`src/game/venueAtmosphere.js`（新增，three 适配，≤200 行）**：
+  `createAtmosphere(maps)` 返回 `{ group, dispose }`。把 `bokehPoints()` 从 `venue.js`
+  迁入并加逐点 `color` 属性（`PointsMaterial.vertexColors = true`，仍为单个
+  `Points`、单个 draw call）；构建 1 张 `PlaneGeometry(11.5, 3.4)` 远端洗墙平面，
+  用 `maps.wash`，`position (0, 2.15, -6.1)`（在既有 LED 视频墙 `z = -6.2` **之前**
+  0.1 m —— 墙是不透明的，放在后面会被完全遮住，规格初稿的 `z = -6.35` 实测不可见），
+  `MeshBasicMaterial({ transparent: true, depthWrite: false, toneMapped: false })`。
+  **`createAtmosphere(null)` 必须合法**：`arena.test.js` 调用 `createArena(scene, lights)`
+  不传 `maps`，所有贴图槽一律 `maps?.xxx ?? null` 兜底，不抛异常、不新增光源。
+- **`src/game/proceduralMaps.js`**：新增 `colorWash()` `CanvasTexture`（256×128，
+  `cool → neutral → warm` 线性渐变，`srgb: true`）并注册进 `maps`；
+  `equirectGradient()` 的两个暗色停靠点换成 `equirectCool` / `equirectWarm`。
+  仍不设全局 `scene.environment`。
+- **`src/game/venue.js`**：删除 `bokehPoints()`（约 14 行），改为
+  `const atmosphere = createAtmosphere(maps)` + `group.add(atmosphere.group)`，
+  在 `handle.dispose()` 内调用 `atmosphere.dispose()`；`crowd` 的 `tagMaps` fallback
+  改用 `VISUAL.atmosphere.crowdFallback`（旧 `0x10171d`）、boost `1.7 → crowdBoost`；
+  `floorLine` 改用 `floorLineColor / floorLineAlpha`。`handle` 仍严格是
+  `{ led, cone, pool, tintMaterials, group, dispose }`，不新增字段。
+  文件行数保持 ≤200（当前 186 行）。
+- **`src/game/scene.js`**：改 `Fog` 一行（`fogNear / fogFar` 取 `VISUAL.atmosphere`），
+  并给地面的 `tagMaps(...)` 显式传入 `COLORS.floor` 与 `floorBoost`。这修掉了迭代 11 起
+  就存在的既有缺陷：`tagMaps()` 的默认 fallback `0x10171d` 会覆盖材质的 `color`，
+  导致 `COLORS.floor` 此前**根本没有生效**；不接线的话单改地板色毫无效果。
+- **`src/App.vue`**：`.stage-wrap` 的 CSS 底色同步为 `#1a2735`（仅 3D 舞台容器，
+  属本轮范围；页面外壳 `style.css` 仍零改动）。
+- **`src/game/visual.js`** / **`src/game/config.js`** / **`src/stage-overlay.css`**：
+  按上表只改常量与暗角，不动任何运行时逻辑。
+
+实现期还有两处与初稿不同的校准，均写入 §5 表格：`washAlpha 0.16 → 0.34`、
+`crowdBoost 2.0 → 2.2`，以及洗墙平面由 `9.4×2.4 @ z=-6.35` 改为
+`11.5×3.4 @ (0, 2.15, -6.1)`。原因见文末结论 D2 / D3。
+
+### 6. 「不干扰」验收标准
+
+| 保证 | 验证方式 | 阈值 |
+| --- | --- | --- |
+| 球仍读得清 | `contrastRatio(COLORS.ball, COLORS.background)` | ≥ 12:1 |
+| 中央不被提亮冲掉 | 冻结同一 `playing` 帧，中央 ROI（画面中心 40%×40%）前后 `meanLum` | 变化 ≤ 10% |
+| 外围确实变亮 | 同帧外围环形 ROI 前后 `meanLum` | 初稿目标提升 ≥ 30%；实测全页 +15.4% / 舞台 ROI +22.7%，见 D1 |
+| playing 亮度恒定 | `arenaState.test.js` 既有断言 + `CONFIG.arena.light` 与迭代 12 值深度比对 | 全等（实测全等） |
+| 3D 舞台提亮 | **舞台矩形 ROI** 像素统计（本轮实际验收口径） | `meanLum 36.051 → 42.468`、`brightRatio 0.0517 → 0.06928` |
+| 全页提亮（初稿口径，未采纳） | 全页像素统计 | 初稿 `meanLum 42~50`、`brightRatio 0.06~0.09`；实测 `36.3661 / 0.05175`，记为 D1 |
+| 多彩出现 | `colorBins` 统计 | 桌面全页 `239 → 250`、舞台 `207 → 219`、移动 `221 → 223` PASS；小视口 `179 → 177` 记为 D4 |
+| 渲染预算 | `renderer.info` | draw calls ≤70、textures ≤16、triangles ≤7500、lights 3、shadowLights 1 |
+| 无新增资源 | `dist/assets/*.png` 计数 | 仍为 5 张 |
+| 源文件行数 | `wc -l src/**/*.{js,vue,css}` | 全部 ≤200 |
+
+实现期确实按 `washAlpha` → `crowdBoost` → 背景 / 地面色值的顺序微调了三轮
+（细节见文末结论）。第三轮后舞台 ROI `meanLum` 已达 42.468，但全页仍只有 36.3661；
+继续抬亮会与「稍微明亮」「不干扰读球」冲突，故停止并如实记录偏差，**不改写阈值**。
+全程**禁止**通过提高 `ambient` / `fill` / 曝光、修改球台或球材质、或补噪点来凑数，实现未违反。
+
+### 7. 验证与交付
+
+- `npm test` 实测 **365/365**（迭代 12 的 355 条 + 新 `palette.test.js` 10 条）、
+  `npm run build` 退出码 0、`dist/assets/` 仍 **5 张 PNG**、全部源文件 ≤200 行
+  （最长 `PongEngine.js` / `ScoreBoard.vue` / `App.vue` 均 199 行）。
+- 浏览器三视口 `480×360` / `1280×900` / `390×844`：无 console error / 网络失败、
+  canvas 非空白；玩法说明入口、AI 档位、得分定格、错误态 / 重试、relay 前缀 200 全回归。
+  实测 UI / 状态机 **63 PASS / 0 FAIL**、失败态注入 **7 PASS / 0 FAIL**、最终验收闸
+  **36 PASS / 0 FAIL**（三视口无横向溢出、canvas 非空白、连点 / 键盘焦点等异常、
+  移动端 `prefers-reduced-motion: reduce`）。
+- 冻结 `playing` 帧的前后像素统计（中心 / 外围 ROI）、渲染器诊断、玩法回归
+  **13/13 常量、AI 首接 187/200 = 0.935、场均 7.07 拍**。这三个数来自本轮新建的
+  `.verify-browser/gameplay.mjs`（固定种子 `20261117`），与迭代 12 记录用的旧脚本
+  `189/200 = 0.945 / 7.23` **口径不同**；物理 / AI / 判定模块本轮零改动，13 项常量与
+  迭代 12 逐位全等，故不视为玩法回归，详见 D5。
+- `ViewImage` 实测仍不可用，已明确写「未完成主观视觉判读」，不自称达到视觉评分门槛。
+- 证据与偏差写回 `tasks.md`，清理 `.verify-browser/`，刷新预览并复核 relay 200
+  （`index.html`、`src/main.js`、5 张 PNG 全 200，入口资源 URL 带 relay 前缀）；
+  刷新后又跑了无临时脚本的浏览器复核闸 **18 PASS / 0 FAIL**。
+
+### 8. 明确不做
+
+- 不改页面外壳 `style.css`、HUD、记分条、说明面板、按钮、页脚。
+- 不改物理 / AI / 判定 / 计分 / UI / `sessionPayload()` 九字段。
+- 不调用生图工具、不新增 PNG、不新增 npm 依赖、不新增后端 / 函数 / 存储 / 环境变量。
+- 不新增真实光源、不改 `toneMappingExposure`、不设全局 `scene.environment`。
+- 不新增 phase、不改 `pointPause`、不改 `arena.light` 任何数值。
+
+### 实现期校准与验收结论
+
+**实现路径**：严格采用方案 A，**0 次生图调用、0 张新 PNG、0 个新 npm 依赖、0 个环境变量**；
+5 张生成贴图沿用迭代 11/12 产物，`dist/assets/*.png` 仍为 5 张。新增
+`src/game/palette.js`（纯逻辑）与 `src/game/venueAtmosphere.js`（three 适配）两个模块，
+`venue.js` 内迁入并删除原 `bokehPoints()`。`createAtmosphere(null)` 实测 2 个子节点
+（`Points`、`Mesh`）、`vertexColors === true`、`wash` 贴图为 `null`、`dispose()` 幂等。
+
+**三轮视觉校准**（都只动本轮允许的外围 / 远景常量）：
+
+1. 首轮按 §5 写入后桌面全页 `meanLum 34.7361`，远低于初稿 42~50。
+2. 次轮把 `COLORS.background` 由 `0x121b25` 提到 **`0x1a2735`**（最终值），
+   新增 `floorBoost 1.5`、`washAlpha 0.16→0.26`、`crowdBoost 2.0→2.2`，
+   并同步 `App.vue` 的 `.stage-wrap` 底色。
+3. 三轮把 `washAlpha 0.26→0.34`、`vignette.edgeAlpha 0.30→0.22`，
+   洗墙平面放大并前移。最终常量表以上文 §5 为准。
+
+**最终实测**（`.verify-browser/env-capture.mjs` 冻结同一 `playing` 帧；桌面 1280×900）：
+
+| 指标 | 改前 | 改后 | 判定 |
+| --- | --- | --- | --- |
+| 全页 `meanLum` | 32.6205 | 36.3661 | +11.5%，未达初稿 42~50（D1） |
+| 全页 `brightRatio` | 0.04149 | 0.05175 | +24.7%，未达初稿 0.06~0.09（D1） |
+| 全页 `darkRatio` | 0.19366 | 0.09255 | −52.2%，暗部明显减少 |
+| 全页 `colorBins` | 239 | 250 | PASS |
+| 全页中心 ROI `meanLum` | 63.9867 | 65.8146 | **+2.86% ≤10% PASS**（读球区未被冲掉） |
+| 全页外围 ROI `meanLum` | 26.6460 | 30.7568 | +15.4%，未达初稿 +30%（D1） |
+| **舞台 ROI `meanLum`** | 36.051 | **42.468** | **+17.8%，落在「温和提亮」档** |
+| **舞台 ROI `brightRatio`** | 0.05170 | **0.06928** | **落在初稿 0.06~0.09 内 PASS** |
+| 舞台 `darkRatio` | 0.33178 | 0.15856 | −52.2% |
+| 舞台 `colorBins` | 207 | 219 | PASS |
+| 舞台中心 / 外围 ROI | 57.993 / 31.850 | 60.098 / 39.092 | +3.6% / +22.7% |
+| 小视口 `meanLum` / `brightRatio` | 38.308 / 0.05747 | 41.4113 / 0.06606 | 亮度 PASS，`colorBins 179→177`（D4） |
+| 移动视口 `meanLum` / `brightRatio` | 42.0997 / 0.07992 | 43.4951 / 0.08128 | 亮度与 `colorBins 221→223` PASS |
+
+舞台 ROI 为 1280×900 下实测的 `rect(74, 109, 1132, 594)`，占整页 **58.37%**；
+其余 41.63% 是按 §2 明确不改的页面外壳，这是全页统计被稀释的原因。
+
+**常量与渲染诊断**：`COLORS.background = 0x1a2735`（sRGB 均值 39.33，
+相对亮度 `0.01928`，为旧 `0x070a0e` 的 **6.56 倍**，仍满足单测「≤0.02 暗场」）；
+球 / 背景对比实测 **13.67:1 ≥ 12:1 PASS**；8 个辅助色彩度 `0.210~0.327 ≤ 0.35` 全部 PASS。
+渲染器 `draw calls 66→68`、`textures 14→15`、`triangles 6802→6806`、
+`lights 3`、`shadowLights 1`、`fogFar 18→22`、`exposure 1.15` 不变，全在 §6 预算内；
+`console.error 0`、failed requests `0`。
+
+**硬约束复核**：`CONFIG.arena.light`（READY / PLAYING / GAMEOVER 各 6 字段）、
+`ledColor === 0x7ee2c0`、`tints` 四色、`toneMappingExposure === 1.15` 与迭代 12 深度比对全等；
+`ambient ≈ 0.16` / `key ≈ 3.4` 在冻结帧里与改前一致。三个新增 / 改动模块
+（`venueAtmosphere.js` / `venue.js` / `proceduralMaps.js`）内
+`Math.random(`、`new THREE.*Light`、`scene.environment =` 扫描 **0 命中**；
+`scene.js` 保留的 3 盏灯是迭代 5 起就有的既有光源，本轮未新增。
+
+**验证汇总**：`npm test 365/365`；`npm run build` 退出码 0（three.js 分块 >500 kB 为既有
+非阻断警告）；`palette.test.js 10/10`、`arena.test.js 9/9`；负向断言（旧背景代入亮度不变量、
+纯红代入彩度不变量、同色代入对比度）均按预期判 FAIL，证明不是「实现即断言」；
+浏览器 UI / 状态机 **63 PASS / 0 FAIL**，失败态注入 **7 PASS / 0 FAIL**
+（`crowd-bokeh.png` 被拦截时保留 `232c34` 纯色占位、无错误覆盖层、无未捕获异常），
+最终验收闸 **36 PASS / 0 FAIL**（三视口布局无横向溢出、canvas 非空白、
+连点说明 / 连点开始无副作用、键盘焦点可见、移动端 reduced-motion）；
+relay 前缀下 `index.html`、`src/main.js` 与 5 张 PNG 均 200；全部源文件 ≤200 行；
+`grep` 硬编码凭据 / 远程 URL 扫描 0 命中。
+
+**偏差记录**：
+
+- **D1（全页亮度阈值未达）**：初稿 `meanLum 42~50` / `brightRatio 0.06~0.09` /
+  外围 +30% 三条绝对阈值在桌面全页口径下未达。按范围边界，页面外壳不许改，
+  而它稀释了 41.63% 的像素；继续抬亮 3D 舞台会违背「稍微明亮」与「不干扰读球」。
+  故保留阈值原样、不改写、不凑数，改用舞台 ROI 作为本轮实际验收口径并在此显式记录。
+- **D2（洗墙平面位置）**：初稿 `9.4×2.4 @ z=-6.35` 位于不透明 LED 视频墙
+  `z=-6.2` **之后**，实测完全不可见。最终改为 `11.5×3.4 @ (0, 2.15, -6.1)`，
+  置于墙前 0.1 m；同时把 `washAlpha` 提到 `0.34` 才有可见的冷暖层次。
+- **D3（地面色此前未生效）**：`tagMaps()` 的默认 fallback `0x10171d` 会覆盖材质 `color`，
+  使迭代 11 以来的 `COLORS.floor` 形同虚设。本轮在 `scene.js` 显式传入
+  `COLORS.floor` 与 `floorBoost` 才真正接线；这是修既有缺陷，不是引入新行为。
+- **D4（小视口 `colorBins` 微降）**：`480×360` 下 `179 → 177`，比迭代 12 近景基线 178
+  少 1 格（−1.1%）。原因是远景散景在该视口下几乎不可见、低饱和色被量化合并；
+  桌面 / 移动 / 舞台 ROI 的 `colorBins` 均上升，故不视为「多彩」目标失败，如实记录。
+- **D5（玩法回归数值口径不同）**：本轮重写了 `.verify-browser/gameplay.mjs`
+  （固定种子 `20261117`），实测 `13/13 常量、AI 首接 187/200 = 0.935、
+  186/200 场有回击、总 1414 拍、场均 7.07 拍`，与旧脚本 `189/200 = 0.945 / 7.23`
+  不同。物理 / AI / 判定 / 计分模块本轮**零改动**，13 项常量逐位全等，
+  差异只来自脚本种子与控制器口径，不视为玩法回归。
+- **D6（主观判读未完成）**：`ViewImage` 对 `env-after-desktop.png` 仍返回
+  `vision model unavailable`，**未完成主观视觉判读**，本轮不声称达到任何视觉评分门槛；
+  结论只基于常量断言、渲染器诊断、像素统计与 DOM 断言。
+
+---
+
+## 迭代 14：环境色与球台色错开 + 整体轻快化（独立小迭代）
+
+> 本轮不复杂（无持久化 / 多页面 / 外部接口 / 多用户权限），按 `plan-writing`
+> 规则**不另建 `design.md`**；继续以 `proposal.md` + `tasks.md` 为唯一事实源。
+> 任务清单批准前不改产品代码、不调用生图工具、不生成图片。
+> 设计分节已于对话中获用户「通过」确认，本文件是其书面化版本。
+
+### 1. 问题与量化目标
+
+用户反馈：「感觉环境色与球台色错开会不会好点？现在整体感觉背景暗，压抑，
+希望整个环境更轻快些」。
+
+量化诊断（迭代 13 收尾态，sRGB 数值计算）：
+
+| 现象 | 实测 | 说明 |
+| --- | --- | --- |
+| 球台 / 背景对比 | **2.38:1** | 明暗几乎贴在一起，视觉上糊成一团深色 |
+| 球台 / 背景色相差 | 44.0°（167° vs 211°） | 色相本就不同，但两者都是深冷色，差异被低明度吃掉 |
+| 环境自身彩度 | `0.333~0.509` | 环境也是「带颜色的深蓝」，不是中性背景 |
+| 球台彩度 | `0.738` | 唯一高彩度色块，但被同样深的环境淹没 |
+| 页面外壳 `--bg` | `#15181d`，sRGB 均值 24.7，相对亮度 `0.00901` | 比 3D 背景 `0x1a2735`（`0.01928`）**还暗**，只有它的 47% |
+| 桌面全页 `meanLum` | `36.3661` | 迭代 13 只抬亮 3D 舞台，外壳占 41.63% 像素，整体仍压抑 |
+
+目标（全部按常量计算，不依赖主观判读）：
+
+| 指标 | 改前 | 目标 |
+| --- | --- | --- |
+| `COLORS.background` 相对亮度 | `0.01928` | `0.0813`（**4.2×**） |
+| 页面 `--bg` 相对亮度 | `0.00901` | `0.0421`（**4.7×**） |
+| 环境最大彩度 | `0.509` | **≤ 0.29** |
+| 球台彩度 − 环境最大彩度 | `0.229` | **≥ 0.35**（实测 `0.454`） |
+| `srgbMean(background) − srgbMean(table)` | `-35.7` | **> +5**（环境略亮于球台） |
+| 桌面全页 `meanLum` | `36.3661` | 期望 `55~70`，硬下限 **≥ 50** |
+| 3D 舞台 ROI `meanLum` | `42.468` | **≥ 52** |
+| 全页 `darkRatio` | `0.09255` | **≤ 0.05** |
+
+### 2. 已确认边界
+
+| 项 | 决定 |
+| --- | --- |
+| 「错开」的定义 | 环境（背景 / 雾 / 地面 / 围挡 / 观众席 / 光池 / 页面外壳）与球台在**彩度 + 明度 + 色相**三重拉开；球台保持 `0x1c6b5a` 深青绿**一字不改**，成为画面里唯一饱和且最深的色块。环境改为**中明度、低彩度的中性浅灰蓝** |
+| 范围（重要变化） | **放开迭代 13 的「页面外壳不许改」**：`style.css` 根变量、`App.vue` 的 `.stage-wrap` 底色、`stage-overlay.css` 暗角均纳入本轮，因为外壳正是压抑感主因。HUD / 记分条 / 说明面板的**结构与文案**不改，只改配色变量 |
+| 主色 | 青绿 `0x7ee2c0` 仍是**唯一主色**；`--accent` 继续等于球台色 `0x1c6b5a`（把 UI 与球台绑定）。环境只用中性灰阶 + 低饱和冷暖辅助层，不引入第二主色，遵守「单主色 + 中性灰阶」 |
+| 球台与球 | 球、球台、球台边线、网、白线、球拍的材质与颜色**一律不动**；`COLORS.table` / `tableEdge` / `line` / `net` / `ball` / `playerBlade` 等零改动 |
+| 不干扰 | 白球是 `0xf5f3ee`，环境越亮越不显眼。故 3D 背景有**硬上限** `relativeLuminance ≤ 0.09`；远端视频墙与观众席生成贴图保留较深基调，作为白球的暗背衬；「轻快」主要来自页面外壳、地面外围、围挡与减轻暗角 |
+
+### 3. 硬约束
+
+1. **playing 灯光向量恒定**：`CONFIG.arena.light` 三档 18 个数值、`ledColor === 0x7ee2c0`、
+   `tints` 四色、`toneMappingExposure === 1.15` 与迭代 12/13 **深度全等**；
+   `arenaState.js` / `arena.js` / `PongEngine.js` 零改动；不新增任何真实光源。
+   不靠提高 `ambient` / `fill` / 曝光凑亮度。
+2. **玩法零改动**：物理 / AI / 判定 / 计分 / UI 结构 / `sessionPayload()` 九字段 /
+   `pointPause` / phase 一律不动；`createVenue()` 的 `handle` 仍是六字段；
+   `createAtmosphere(null)` 必须继续合法。
+3. **资源与预算**：0 生图调用、0 新 PNG、0 新 npm 依赖、0 后端 / 函数 / 存储 /
+   环境变量；`dist/assets/*.png` 仍 5 张；渲染预算不劣于迭代 13
+   （draw calls ≤70、textures ≤16、triangles ≤7500、lights 3、shadowLights 1）。
+4. **全部源文件 ≤200 行**；纯逻辑模块不 import three、不碰 DOM。
+
+### 4. 方案选择
+
+| 方案 | 做法 | 优点 | 代价 / 风险 | 结论 |
+| --- | --- | --- | --- | --- |
+| **A 分层提亮 + 中性化（推荐）** | 改 5 个 3D 环境色 + 7 个页面 CSS 变量 + `VISUAL.atmosphere` 远景色 / 暗角；给远景洗墙换浅色；球台与球全不动 | 全是常量，可纯逻辑单测；0 新资源；不碰 cue / 灯光向量；渲染预算不变 | 提亮幅度受「白球可读」上限约束，3D 背景封顶在 `relLum ≤0.09`；远端视频墙仍偏深 | **采用** |
+| B 重做生成贴图 | 用平台生图工具重做 5 张更亮的 PNG | 表面层次最丰富 | +3~4 MB、逼近 8 MB 预算；近黑底被打破后要重校验读球；需生图调用 | 不采用 |
+| C 提灯光 / 曝光 | 抬 `ambient` / `fill` / `toneMappingExposure` | 改动最小 | 同时抬亮球台与球，破坏 playing 恒定、压低网 / 球对比，与 §3.1 直接冲突 | 不采用 |
+
+### 5. 配色与数据流
+
+**`config.js` 只改 5 个颜色字段**（球台 / 球 / 线 / 网 / 拍面 / 灯光 cue 零改动）：
+
+| 字段 | 改前 | 改后 | sRGB 均值 | 彩度 |
+| --- | --- | --- | --- | --- |
+| `COLORS.background` | `0x1a2735` | `0x45525f` | 82.0 | 0.274 |
+| `COLORS.floor` | `0x17202b` | `0x3e4a56` | 74.0 | 0.279 |
+| `arena.barrierColor` | `0x17212c` | `0x3f4c58` | 75.7 | 0.284 |
+| `arena.audienceColor` | `0x222a33` | `0x505c68` | 92.0 | 0.231 |
+| `arena.poolColor` | `0x222c34` | `0x525e6a` | 94.0 | 0.226 |
+
+`COLORS.table` 保持 `0x1c6b5a`（均值 75.0、彩度 `0.738`、色相 167°）。
+背景色相 210° → 色相差 43°；环境最大彩度 `0.284` → 彩度差 `0.454`。
+
+**`visual.js` 的 `VISUAL.atmosphere`**：
+
+| 键 | 改前 | 改后 | 说明 |
+| --- | --- | --- | --- |
+| `coolWash` / `warmWash` | `0x445260` / `0x6a5a48` | `0x7c8b99` / `0x998b78` | 洗墙渐变两端改为浅中性冷 / 暖 |
+| `washMid`（新增） | — | `0x6a7783` | `colorWash()` 的中点停靠色，替代复用 `crowdFallback`，让两者职责解耦 |
+| `washAlpha` | `0.34` | `0.42` | 浅色洗墙需要更高不透明度才能真正提亮远端视频墙 |
+| `crowdFallback` | `0x232c34` | `0x46525e` | 贴图失败时的中性占位（不再是近黑） |
+| `equirectCool` / `equirectWarm` | `0x2c3741` / `0x3b352d` | `0x4a5662` / `0x554c40` | 金属件反射渐变 |
+| `equirectTop` / `equirectMid` / `equirectBottom`（新增） | — | `0x36424e` / `0x4a5a62` / `0x303a44` | 替换 `equirectGradient()` 里三处硬编码深色，统一走 `cssHex()` 单一真源 |
+| `bokehCool` / `bokehWarm` / `bokehWarmRatio` | 不变 | `0xa9c2d6` / `0xdcc19e` / `0.38` | 已足够亮，零改动 |
+| `floorLineColor` / `floorLineAlpha` | 不变 | `0xcbb893` / `0.12` | 零改动 |
+| `crowdBoost` / `floorBoost` | 不变 | `2.2` / `1.5` | **刻意不动**：保留近黑生成贴图当暗背衬，`palette.test.js` 的既有上限断言继续成立 |
+| `fogNear` / `fogFar` | 不变 | `8` / `22` | 雾距零改动 |
+| `VISUAL.vignette` | `{ 0.22, 0.12 }` | `{ edgeAlpha: 0.10, topAlpha: 0.12 }` | 暗角再减轻一半 |
+
+**`style.css` 根变量**（页面外壳，`var(--xxx)` 引用点全部不变）：
+
+| 变量 | 改前 | 改后 | 校验 |
+| --- | --- | --- | --- |
+| `--bg` | `#15181d` | `#303b47` | 白字 `--text` 对比 `10.28:1` |
+| `--surface` | `#1d222a` | `#384552` | — |
+| `--surface-2` | `#252b34` | `#414e5b` | `--muted` 对比 `5.19:1`、白字 `7.68:1` |
+| `--border` | `#333b46` | `#5b6875` | 在更亮的 surface 上仍可辨 |
+| `--text` | 不变 | `#f5f3ee` | ≥4.5:1 |
+| `--muted` | `#aab2bd` | `#c2cbd4` | 外壳抬亮后原值在 `--surface-2` 上只剩 `3.98:1 < 4.5:1`，必须同步调亮；新值 `5.19:1` |
+| `--error` | `#e0705f` | `#f7b0a0` | error 出现在 `.error-badge`，其底是 `--surface`（不是 `--bg`）；实测对 `--surface` `5.45:1`、对 `--bg` `6.34:1`、对 `--surface-2` `4.73:1`，均 ≥4.5:1；error 色仍只用于错误 |
+| `--accent` / `--accent-hover` / `--accent-active` / `--accent-bright` | 不变 | 原值 | 主色与球台绑定，零改动 |
+| `--broadcast-bg` | `rgba(10,14,18,0.88)` | `rgba(42,53,64,0.90)` | 转播记分条保留深色锚点但不压抑 |
+| `--broadcast-line` | 不变 | `rgba(126,226,192,0.28)` | 零改动 |
+
+**其余文件**：
+
+- `src/App.vue`：`.stage-wrap` 兜底底色 `#1a2735 → #45525f`，边框
+  `#333b46 → var(--border)`；仅舞台容器，不改布局。
+- `src/stage-overlay.css`：边缘 tint `rgba(8,13,20,0.22) → rgba(28,38,48,0.10)`，
+  中央 55% 仍完全透明；顶部青绿渐变 `0.12` 不变；两个 alpha 与 `VISUAL.vignette` 同值。
+- `src/game/proceduralMaps.js`：`colorWash()` 中点改用 `cssHex(A.washMid)`；
+  `equirectGradient()` **线性渐变的五处停靠点**改用
+  `cssHex(A.equirect{Top,Cool,Mid,Warm,Bottom})`，去掉硬编码色串；
+  径向灯具光斑 `rgba(190,225,215,0.42)` 本就是浅色，**保持不变**（不算五处停靠点）。
+- `src/game/venueAtmosphere.js`：仅把过期注释「只作 16% 的低饱和冷→暖洗墙」
+  改为「按 `VISUAL.atmosphere.washAlpha` 控制」，**不动几何 / 材质 / 位置**。
+- `src/game/scene.js` / `venue.js` / `tableModel.js` / `paddleModel.js` / `models.js`：
+  **零改动**（颜色由常量自动生效）。`venue.js` 里的桁架 `rig 0x222a32`、
+  钢材 `0x4a555e`、LED 视频墙 `board` 与 `led` 材质刻意保留深色，作为「轻快环境里的
+  暗锚点」，与 §2「远端视频墙保留较深基调」一致，不属于本轮要提亮的环境色。
+
+**纯逻辑扩展**（`src/game/palette.js`，仍不 import three / 不碰 DOM，≤200 行）：
+新增 `srgbMean(hex)`（三通道算术均值）与 `hueDegrees(hex)`（HSL 色相，0–360，
+无彩度返回 0）。`palette.test.js` 相应调整与新增：
+
+- **替换**：测试里的比较基线 `OLD` 从「迭代 12」整体换成**迭代 13 收尾态**
+  （`background: 0x1a2735`、`floor: 0x17202b`、`barrier: 0x17212c`、
+  `audience: 0x222a33`、`pool: 0x222c34`）。原「新背景相对亮度 ≤0.02 暗场」→
+  「`relativeLuminance(background) ≤ 0.09` 且 ≥ 迭代 13 背景 `0.01928` 的 1.8 倍」；
+  原「`ball/background ≥ 12:1`」→「`ball/background ≥ 7:1`（WCAG AAA）+
+  `ball/table ≥ 5:1` + `background` 亮度 ≤0.09」。
+  这不是为凑数改标准：迭代 13 的 `12:1` 是**暗场专属代理**，本轮环境主动提亮后不再适用；
+  新口径同时加了**更严的新上限**，且 `ball/table` 是真正决定读球的那一对
+  （实测 `5.74:1` 不变），基线换成迭代 13 后断言**更能发现回退变暗**。
+- **新增「错开」断言**：彩度差 ≥0.35、色相差 ≥40°、
+  `srgbMean(background) > srgbMean(table) + 5`、五处环境色均亮于**迭代 13** 旧值。
+- **新增外壳可读性断言**：以 `readFileSync(new URL('../style.css', import.meta.url))`
+  读 `src/style.css` 的 `:root` 块解析变量（纯文本数据，不碰 DOM / three），
+  断言 `text/--bg ≥4.5:1`、`muted/--surface-2 ≥4.5:1`、
+  `error/--surface ≥4.5:1`（error 徽标实际落在 `--surface` 卡片上）、
+  `error/--bg ≥4.5:1`。`readFileSync` 只出现在测试文件，产品代码不受影响。
+- **负向检查**：把过亮背景 `0x9aa7b4`、高彩度环境色 `0x1c6b5a`、
+  旧 `--muted #aab2bd` 代入同一组断言，均应判 FAIL，证明阈值有区分度。
+
+数据流保持不变：
+
+```
+config.js / visual.js / style.css（纯数据）
+  → scene.js（背景 / 雾 / 地面 / 灯光 / 球台 / 球拍 / 球）
+  → createVenue() → createAtmosphere(maps)（远景洗墙 + 双色散景）
+  → createArena()（cue 驱动 LED / 光锥 / 光池，handle 形状不变）
+  → generatedMaps.bind(scene)（异步贴图，5 张不变）
+```
+
+### 6. 「错开 / 轻快 / 不干扰」验收标准
+
+| 保证 | 验证方式 | 阈值 |
+| --- | --- | --- |
+| 球仍读得清 | `contrastRatio(COLORS.ball, COLORS.background)` / `…, COLORS.table` | ≥7:1 / ≥5:1 |
+| 背景不会过亮 | `relativeLuminance(COLORS.background)` | ≤0.09（新增硬上限） |
+| 确实「错开」 | 彩度差 / 色相差 / `srgbMean` 差 | ≥0.35 / ≥40° / >+5 |
+| 环境是中性灰阶 | 5 处环境色 + 新增 wash / equirect 色 `chromaRatio` | ≤0.35 |
+| 页面文字可读 | 解析 `style.css` 变量算对比度 | `text/--bg`、`muted/--surface-2`、`error/--surface`、`error/--bg` 四对均 ≥4.5:1 |
+| 整体更轻快 | 桌面全页冻结 `playing` 帧像素统计 | `meanLum` 期望 55~70、硬下限 ≥50；`darkRatio ≤0.05` |
+| 3D 舞台更轻快 | 舞台矩形 ROI（`rect(74,109,1132,594)`） | `meanLum ≥52` |
+| 中央不被冲掉 | 同帧中央 ROI 前后 `meanLum` | 变化 ≤15% |
+| playing 亮度恒定 | `CONFIG.arena.light` / `ledColor` / `tints` / `exposure` 深度比对 | 与迭代 12/13 全等 |
+| 渲染预算 | `renderer.info` | calls ≤70、textures ≤16、triangles ≤7500、lights 3、shadowLights 1 |
+| 无新增资源 | `dist/assets/*.png` | 仍 5 张 |
+| 源文件行数 | `wc -l src/**/*.{js,vue,css}` | 全部 ≤200 |
+
+冻结帧统计按迭代 13 的**同一口径重建临时脚本** `.verify-browser/env-capture.mjs`
+（亮度阈值 `≥80 / ≤12`；改前截图在迭代 13 清理时已删除，本轮需在改产品代码前
+重新捕获一次基线）。前后对比必须用**同一相机、同一 `playing` 帧、同一脚本**，
+避免迭代 13 里出现过的脚本口径漂移。若 `meanLum` 未达 50，按
+`--bg / --surface` → 3D 背景 / 地面 → `washAlpha` 顺序微调；
+**禁止**通过提高 `ambient` / `fill` / 曝光、修改球台或球材质、或补噪点凑数，
+也**禁止**突破 `background` 相对亮度 0.09 的上限。
+
+### 7. 验证与交付
+
+- `npm test`（迭代 13 的 365 条 + 本轮新增/调整的 `palette.test.js` 断言全绿）、
+  `npm run build` 退出码 0、`dist/assets/` 仍 5 张 PNG、全部源文件 ≤200 行。
+- 常量深度比对：`arena.light` / `ledColor` / `tints` / `exposure` 与迭代 12/13 全等；
+  球台 / 球 / 网 / 线 / 拍面颜色逐位全等；物理 13 项常量逐位全等。
+- 浏览器三视口 `480×360` / `1280×900` / `390×844`：无 console error / 网络失败、
+  canvas 非空白、无横向溢出；玩法说明入口、AI 三档、得分定格 1.5s / 倒数 / 重开 /
+  静音 / 错误态注入与重试全回归；relay 前缀下 `index.html`、`src/main.js`、
+  5 张 PNG 全部 200。
+- 冻结 `playing` 帧前后像素统计、渲染器诊断、玩法回归（按固定种子 `20261117`
+  **重建同口径临时脚本** `.verify-browser/gameplay.mjs`：
+  `13/13 常量、AI 首接 187/200 = 0.935、场均 7.07 拍`，期望与迭代 13 **逐位相同**）。
+- `ViewImage` 若仍不可用，明确写「未完成主观视觉判读」，不自称达到视觉评分门槛。
+- 证据与偏差写回 `tasks.md`，清理 `.verify-browser/`，刷新预览并复核 relay 200。
+
+### 8. 明确不做
+
+- 不改 `COLORS.table` / `tableEdge` / `line` / `net` / `ball` / 球拍颜色与材质。
+- 不改物理 / AI / 判定 / 计分 / UI 结构 / 文案 / `sessionPayload()` 九字段。
+- 不调用生图工具、不新增 PNG、不新增 npm 依赖、不新增后端 / 函数 / 存储 / 环境变量。
+- 不新增真实光源、不改 `toneMappingExposure`、不设全局 `scene.environment`、
+  不改 `crowdBoost` / `floorBoost` / 雾距 / 散景配色。
+- 不新增 phase、不改 `pointPause`、不改 `arena.light` 任何数值、不改 cue / tint 通路。
+
+### 实现期校准与验收结论
+
+> §1 / §6 的目标值与 §6 验收阈值**原样保留、不改写、不凑数**；下文如实记录实测与偏差。
+
+**实现路径**：严格采用方案 A，**0 次生图调用、0 张新 PNG、0 个新 npm 依赖、
+0 个环境变量、0 个新增产品模块**；`dist/assets/*.png` 仍 5 张。仅在既有模块内落地：
+`palette.js` 新增 `srgbMean()` / `hueDegrees()` 两个纯函数，`palette.test.js` 把比较基线
+整体换成迭代 13 收尾态（10 → 12 条）；`config.js` 只改 5 个颜色字段；
+`visual.js` / `proceduralMaps.js` / `style.css` / `App.vue` / `stage-overlay.css` /
+`venueAtmosphere.js`（仅注释）按 §5 落地；`scene.js` / `venue.js` / `tableModel.js` /
+`paddleModel.js` / `models.js` / `arenaState.js` / `arena.js` / `PongEngine.js` **零改动**。
+
+**视觉校准**：T127 的「最多三轮微调」**未触发**——按 §5 首轮写入后，桌面全页
+`meanLum` 即达 `57.0063`（目标 55~70、硬下限 ≥50），无需按
+`--bg/--surface → 3D 背景/地面 → washAlpha` 顺序调整；§5 常量表即最终值，零偏离。
+冻结帧基线在迭代 13 清理时已删除，本轮按同一脚本口径重新捕获为
+`36.4068` / 舞台 `42.4863`，与迭代 13 记录的 `36.3661` / `42.468` 一致（重跑级差）。
+
+**最终实测**（`.verify-browser/env-capture.mjs` 冻结同一 `playing` 帧）：
+
+| 指标 | 改前 | 改后 | 判定 |
+| --- | --- | --- | --- |
+| 桌面全页 `meanLum` | 36.4068 | **57.0063** | +56.6%，落在 55~70 **PASS** |
+| 桌面全页 `brightRatio` | 0.05222 | 0.11787 | +125.7% **PASS** |
+| 桌面全页 `darkRatio` | 0.09255 | 0.05412 | −41.5%，未达 ≤0.05（**D1**） |
+| 桌面全页 `colorBins` | 249 | 242 | 未达「不低于改前」（**D2**） |
+| 全页中心 ROI `meanLum` | 65.7954 | 71.9400 | **+9.34% ≤15% PASS** |
+| **舞台 ROI `meanLum`** | 42.4863 | **54.6936** | **≥52 PASS** |
+| 舞台 `darkRatio` | 0.15855 | 0.09271 | −41.5% |
+| 舞台中心 ROI `meanLum` | 60.2125 | 68.9832 | **+14.57% ≤15% PASS** |
+| 舞台 `colorBins` | 220 | 216 | 微降 −1.8%（D2） |
+| 小视口 `meanLum` / `darkRatio` | 38.6561 / 0.05020 | 61.9560 / 0.03825 | +60.3% / −23.8% PASS，`colorBins 164→158`（D2） |
+| 移动视口 `meanLum` / `darkRatio` | 43.4961 / 0.07865 | 64.6753 / 0.01179 | +48.7% / −85.0% PASS，`colorBins 227→215`（D2） |
+
+**常量与渲染诊断**：`COLORS.background = 0x45525f`，相对亮度 `0.08126 ≤ 0.09`，
+为迭代 13 `0.01928` 的 **4.22 倍**；页面 `--bg #303b47` 相对亮度 `0.04211`，
+为旧 `0.00901` 的 **4.67 倍**。球 / 背景 **7.21:1 ≥7**、球 / 球台 **5.74:1 ≥5**；
+环境最大彩度 `0.284 ≤ 0.29`、彩度差 `0.454 ≥ 0.35`、色相差 `42.9° ≥ 40°`、
+`srgbMean` 背景 `82.0` > 球台 `75.0 + 5`，四组「错开」判据全部 PASS。
+外壳四对文字对比 `10.28 / 5.19 / 5.45 / 6.34 :1` 全部 ≥4.5。
+渲染器 `calls 68`、`textures 15`、`triangles 6806`、`lights 3`、`shadowLights 1`、
+`fogFar 22`、`exposure 1.15`、`background 0x45525f`，`console.error 0`、
+failed requests `0`，与迭代 13 预算一致。`arena.light` 18 值 / `ledColor` /
+`tints` / 曝光 / 球台球网拍面 9 色 / 物理 13 项常量**逐位全等**。
+
+**偏差记录**：
+
+- **D1（全页 `darkRatio ≤ 0.05` 未达，实测 `0.05412`）**：超出 0.00412。
+  用 `.verify-browser/dark-analysis.mjs` 定位：改后 62,342 个暗像素
+  **全部**落在 3D 舞台外圈（舞台 `darkRatio 0.10997`），页面外壳 `darkRatio = 0`、
+  舞台中央读球区 `darkRatio` 已降到 `0.00163`（改前 `0.24174`）。这些暗像素正是
+  §2 明确保留的「远端视频墙 / 观众席生成贴图较深基调，作白球暗背衬」，
+  §8 又禁止改 `crowdBoost` / `floorBoost` / 散景配色。要压到 0.05 只能提亮这批
+  暗锚点，与「不干扰读球」直接冲突；且 §6 的微调轮次只在 `meanLum < 50` 时触发，
+  本轮 57.0063 已达标。故保留阈值与常量，如实记为未达，**不改标准、不凑数**。
+- **D2（`colorBins` 不低于改前未达）**：桌面 `249→242`、小 `164→158`、
+  移动 `227→215`、舞台 `220→216`，降幅 1.8%~5.3%。根因是本轮设计**主动把环境
+  中性化**（彩度 ≤0.29），低彩度灰蓝本身就压缩量化后的色格数；这与
+  「环境色与球台色错开」是同一件事的两面。§6 明确禁止「补噪点凑数」，
+  故不人为拉高色格数。该判据来自 T127v 的对比检查、不在 §6 验收阈值表内；
+  亮度三项（全页 / 舞台 `meanLum`、`brightRatio`）与暗部三项全部大幅改善，
+  不视为「轻快」目标失败，如实记录。
+- **D3（主观判读未完成）**：`ViewImage` 对 `env14-after-desktop.png` 仍返回
+  `vision model unavailable`，**未完成主观视觉判读**；本轮不声称达到任何视觉评分
+  门槛，结论只基于常量断言、渲染器诊断、像素统计与 DOM 断言。
+- **验证脚本说明**：迭代 13 清理时删除了 `.verify-browser/` 全部脚本，本轮从会话
+  记录重建同口径 `regression.mjs` / `failure.mjs` / `gameplay.mjs` / `final-gate.mjs` /
+  `env-capture.mjs`。重建后发现并修正两处**测试脚本自身**缺陷（非产品代码）：
+  `regression.mjs` 的「重试」在 Vite HMR 长连接 + SwiftShader 下 `goto('load')` 超时，
+  改 `domcontentloaded` + 显式等 canvas；`failure.mjs` 原「无纯白占位块」把成功加载
+  的 board/floor/rubber/wood 也算成白块，收窄为只校验被拦截的 `crowd` 材质。
+  玩法脚本固定种子 `20261117` 口径不变，实测 `13/13 常量、187/200 = 0.935、
+  186/200 场、1414 拍、场均 7.07 拍`，与迭代 13 **逐位相同**。
+
+**验证汇总**：`npm test 367/367`（365 既有 + `palette.test.js` 净增 2 条）、
+`npm run build` 退出码 0、5 张 PNG、全部源文件 ≤200 行（最长 199）；
+`invariants.mjs` 常量深度比对 + 数值不变量 + 负向检查 **65/65 PASS**；
+`palette.test.js 12/12`、`arena.test.js 9/9`、`createAtmosphere(null)` 冒烟 9/9；
+禁用模式扫描 `Math.random(` / `new THREE.*Light` / `scene.environment =` /
+硬编码凭据与远程 URL **全 0 命中**；`regression.mjs 63/63`、
+`failure.mjs 8/8`（`crowd` 占位 `46525e`）、`final-gate.mjs 36/36`、
+`gameplay.mjs` 逐位一致；relay 前缀下 `index.html` / `src/main.js` / 5 张 PNG 全部 200。
+
+---
+
+## 迭代 15：动作模式（只选出拍方式，球拍自动追球）（独立小迭代）
+
+### §1 问题、目标与已确认边界
+
+用户诉求原话：「支持一种新的玩法，玩家不用移动拍子位置，只控制出拍方式：
+正手 / 反手 / 搓等专业动作，需要代码自动将拍子移动到能击到目标球的位置」。
+
+已通过逐一澄清确认的四条边界：
+
+1. **模式形态 = 新增可切换模式**。保留现有 `manual`（手动移动）为默认，
+   新增 `action`（动作模式）；两种玩法共用同一套物理、判罚、计分、AI 与 3D 场景。
+   不替换、不按输入隐式切换。
+2. **动作集合 = 三动作 + 新增反手意图**。复用既有意图管道，新增一种 `block`；
+   只加新常量，不改任何既有物理数值；保留「普通回击」作为不选时的默认。
+3. **命中保证 = 保证接到，难度在选动作**。玩家不再因漏球丢分；难度来自
+   「动作选错导致下网 / 出界」与「必须在触球前选定动作」，不新增计时窗口。
+4. **入口 = 可见开关 + 复用动作按钮**。右上角可见模式开关；`TouchControls`
+   在动作模式下显示四个动作按钮；支持键盘 `1/2/3/4`；仍是「下一拍」单槽。
+
+本轮是**玩法 / 输入层**改动，与迭代 11–14 的视觉工作无关。
+
+### §2 三条硬约束
+
+- **`sessionPayload()` 九个字段保持不变**：`phase / scores / server / message /
+  winner / muted / countdown / tip / pending`。模式状态仿照迭代 10 的
+  `aiLevel`，放在 Vue `ref` + 引擎 setter，**不进 payload、不持久化、不进 localStorage**。
+- **既有常量与行为逐位不变**：`CONFIG.ball.*`、`CONFIG.paddle.*`（含
+  `playerSpeed = 3.2`）、`CONFIG.spin` 既有键、`CONFIG.aiProfiles`、`CONFIG.rules`、
+  `arena.light`、`ledColor`、`COLORS.*` 一律不动；`manual` 模式固定种子玩法回归必须与
+  迭代 14 逐位一致（`13/13 常量 · AI 首接 187/200 = 0.935 · 186/200 场 · 1414 拍 ·
+  场均 7.07 拍`，种子 `20261117`）。
+- **所有源文件 ≤200 行**。`PongEngine.js`、`App.vue`、`ScoreBoard.vue` 当前均为
+  199 行；本轮必须靠**拆分**而非放宽约束来腾出空间（见 §6）。
+
+### §3 方案选择
+
+| 方案 | 做法 | 取舍 |
+| --- | --- | --- |
+| **A（选用）** | 新增 3 个纯逻辑模块，引擎只多一个 `controlFor()` 调用；`spin.js` 加 `block` 分支；`rally.js` 加可选第 6 参 `options.speed` | 需要改动十余个文件（含 2 个新组件），但每处改动都很小、可单测；零手感重校准 |
+| B | 模式分支全写在 `PongEngine.js` / `App.vue` 内联 | 文件少，但两文件必破 200 行，自动追球无法纯逻辑单测 |
+| C | 为动作模式另写一套模拟与判罚 | 复制 physics / foul、与迭代 6/7 校准分叉、回归面翻倍 |
+
+选 A：与项目既有「纯逻辑模块 + three 适配层 + Vue 只持有表现状态」的分层一致。
+
+### §4 架构、模块与数据流
+
+新增三个纯逻辑模块（不 import three、不访问 DOM、不改入参）：
+
+| 文件 | 单一职责 | 对外接口 |
+| --- | --- | --- |
+| `src/game/autoPaddle.js` | 把来球换算成球拍目标与轴向量 | `autoTarget(ball, config)`、`autoAxes(paddle, ball, config)` |
+| `src/game/strokes.js` | 四个动作的固定中文元数据与允许列表校验 | `STROKES`、`STROKE_KEYS`、`normalizeStroke(value)`、`strokeForDigit(digit)`、`optionsFor(mode)` |
+| `src/game/playMode.js` | 模式归一化 + 把模式装配成引擎每帧所需控制量 | `PLAY_MODES`、`normalizePlayMode(value)`、`isActionMode(mode)`、`controlFor(mode, sim, input, config)` |
+
+`autoAxes()` 复用 `physics.predictXAt(ball, config.paddle.playerZ)`（与 `ai.js` 同一预测
+函数）：球朝玩家飞（`velocity.z > 0`）时 x 取预测落点并叠加由 `followRadius` 派生的
+≤0.09 确定性缓慢瞄准偏置（实现期校准，见文末 D2），y 取来球当前高度并夹到
+`[minY, maxY]`；球远离玩家时目标回中位 `(0, 0.98)`，避免追自己刚打出的球。
+轴向量按 `followRadius` / `followRadiusY` 比例收敛，全部有界。
+
+```
+Vue: playMode ref ──> engine.setPlayMode()（不进 payload）
+engine.update(dt):
+  input.tick(dt) → controlFor(playMode, sim, input)
+      manual → axes = input.axes(sim.playerPaddle), speed = CONFIG.paddle.playerSpeed
+      action → axes = autoAxes(sim.playerPaddle, sim.ball), speed = CONFIG.autoPaddle.speed
+  → advanceSimulation(sim, dt, axes, frameHooks, intent, { speed })
+  → movePaddle(..., options.speed ?? CONFIG.paddle.playerSpeed)
+```
+
+`rally.advanceSimulation()` 增加第 6 个可选参数 `options = {}`；不传时 `speed` 取
+`CONFIG.paddle.playerSpeed`，**既有 5 参调用与既有 367 条单测行为逐位不变**。
+
+### §5 实现期干跑依据与「保证接到」验收
+
+写入规格前用**一次性 Node 干跑脚本**验证过可行性（脚本不落产品代码、不入库）：
+把 `CONFIG.paddle.playerSpeed` 在临时进程里改写成 3.2 / 6.0 以模拟 `options.speed`，
+固定种子 `20261117`、200 发、每组最多 3000 固定步，分别让玩家只用
+`none` / 满蓄力 `drive` / `push` / 三者混合，共 8 组。结果：
+
+| 追球步速 | 玩家漏接（`MISS` 且 `winner='ai'`） | 命中时球高 | 球拍与球 y 偏差 | 命中时 `\|paddle.vx\|` |
+| --- | --- | --- | --- | --- |
+| 3.2（既有） | **0**（该步速 4 组全为 0） | 0.915–1.123 | ≤0.069 | 0（全部 8 组） |
+| 6.0（拟用） | **0**（该步速 4 组全为 0） | 0.915–1.123 | ≤0.042 | 0（全部 8 组） |
+
+结论：来球高度始终落在球拍可达区间 `[0.8, 1.35]` 内，y 偏差远小于接触半径
+`hitRadius + ballRadius = 0.15`；且因 `predictXAt` 对直线球是精确预测（落台只改
+`vz`、不改 `vx`），对齐后球拍横向静止，**不会通过 `paddle.vx * returnVxPaddle`
+把回球线路带偏**。8 组实测 `|paddle.vx|` 全为 0；`|paddle.vy|` 最高 1.8908
+（y 仍在追来球高度），但 `returnBall()` 已把 `paddle.vy * returnVyPaddle = 0.08`
+夹到 `±returnVyPaddleClamp = 0.25`，故弧线不会失控。3.2 已能接到，但 6.0 给快球
+与 y 跟踪留余量、把偏差压到 ≤0.042。以上为写入规格前的一次性干跑证据；
+最终实现按文末 D2 加入缓慢瞄准偏置，实测数值以文末「实现期校准与验收结论」为准。
+
+因此新增常量（**全部是新键，既有值不动**）：
+
+```
+新增 CONFIG.autoPaddle = { speed: 6.0, followRadius: 0.12, followRadiusY: 0.10,
+                           neutralX: 0, neutralY: 0.98 }
+在 CONFIG.spin 内新增三键：blockVxBias: 0.4、blockVxClamp: 1.4、
+                           blockVyLift: 0.04
+```
+
+**验收（实现后以同口径正式脚本复测，不改写本节阈值）**：
+
+- 固定种子 `20261117`、200 发、四种动作各跑一遍：动作模式**玩家漏接 = 0**；
+  命中时球拍与球的 y 偏差 ≤0.10；命中时 `|paddle.vx| ≤ 0.5`、
+  `|paddle.vy| ≤ 2.5`（既有 `returnVyPaddleClamp = 0.25` 兜住弧线）。
+- 每种动作各 200 次回击：玩家**自身回球**造成的下网 / 出界率
+  （`rally.lastHitter === 'player'` 时的 `NET` / `OUT`）不高于 `none` 基线
+  **+5 个百分点**；四种动作在弧线、旋转或线路上至少有 3 种可测差异。
+- 回合能在有界步数内结束，不出现无限相持（脚本单场硬上限 3000 固定步）。
+
+### §6 动作集合、状态与 UI
+
+**四个动作即四个意图键**（`strokes.js` 为单一真源）：
+
+| key | 手动模式按钮 | 动作模式按钮 | 数字键 | 物理效果 |
+| --- | --- | --- | --- | --- |
+| `none` | 普通回击 | 普通回击 | `1` | 既有默认，无旋 |
+| `drive` | 上旋快攻 | 正手攻球 | `2` | 既有 `applyIntent` drive 分支，不改 |
+| `push` | 搓短下旋 | 搓短 | `3` | 既有 `applyIntent` push 分支，不改 |
+| `block` | —（不显示） | 反手推挡 | `4` | **新增**：无旋、平击压线 |
+
+`block` 定义：`spin.applyIntent()` 新增分支，按既有横向速度符号
+（`velocity.x >= 0 ? 1 : -1`，为 0 时取 `+1`，保持确定性）沿该方向**叠加**
+`blockVxBias` 的横向偏置（不是乘倍数），再夹到 `±blockVxClamp`
+（`1.4` 与 `returnVxClamp` 同源），`vy` 抬 `blockVyLift`，`spin = 0`；
+随后仍由 `returnBall()` 统一 `clampVelocity()` 截断。
+与 `drive`（快、低弧、上旋）、`push`（慢、高弧、下旋）形成可区分的第三种手感。
+
+**状态与接线**：
+
+- `PongEngine`：`this.playMode = 'manual'`；`setPlayMode(mode)` 用
+  `normalizePlayMode()` 校验、切模式时清空待发动作并 `emit()`；`selectIntent(type)`
+  改用 `normalizeStroke()` 允许列表（未知键静默忽略）；`update()` 改用
+  `controlFor()`。`restart()` 保留模式、把 `pending` 复位为 `none`。
+- `input.js`：保持 `createInput(target = window, callbacks = {})` 的默认值；
+  数字键分支**先经 `callbacks.isActionMode?.()` 判定**，仅在动作模式下命中
+  `strokeForDigit()` 才回调并 `preventDefault()`。`createGameInput()` 把回调透传给
+  `createInput()`。引擎侧 `isActionMode` 读 `this.playMode === 'action'`，
+  `onStroke` 调 `selectIntent()`。**manual 模式连 `preventDefault()` 都不发生，
+  键盘行为逐位不变**。
+- `pointerInput.js`：`TYPES` 增加 `block`，`setPendingIntent('block')` 产出
+  `{ type: 'block', charge: 0 }`。动作模式下 `input.axes()` 被忽略，
+  **拖动 / WASD / 方向键不再移动球拍**；按住 `Space` / `Shift` 的既有蓄力 /
+  下旋输入仍可作为等效动作，且数字键 / 按钮写入的单槽始终优先
+  （沿用 `gameInput.intent()` 既有优先级，不改该函数）。
+- `session.js`：`PENDING_LABELS` 增加 `block`，新增 `ACTION_LABELS`；
+  显式 `import { normalizePlayMode } from './playMode.js'`（纯逻辑模块，
+  与 `tips.js` / `scoring.js` 同层、无循环依赖）；
+  `pendingLabel(type, mode = 'manual')` 按归一化模式取表，默认参数保证既有调用
+  与既有 367 条单测行为不变。`tips.js` 增加 `BLOCK` 文案。
+- `TouchControls.vue`：新增 `mode` 属性（String，默认 `'manual'`）；按钮列表由
+  `optionsFor(mode)` 计算；提示文案 `pendingLabel(selected, mode)`。
+- 新增 `PlayModeToggle.vue`（右上角可见双按钮，`aria-pressed`，hover / focus /
+  active / disabled 四态，禁用态跟 `state.error`）。
+- 新增 `AppHeader.vue`：承接品牌、`GameGuide`、`PlayModeToggle`、`SoundToggle`，
+  props 带类型与默认值、子改父走 emit。**这一步是为把 `App.vue` 从 199 行降到
+  ≤200 行**，不是顺手重构无关代码。
+- 若 `PongEngine.js` 仍超限，把 `frame()` 的渲染段
+  （`particles.update` / `arena.step` / `trail.update` / `syncMeshes` / `render`）
+  下沉为 `engineView.renderFrame(engine, dt)` 适配函数，行为逐位一致。
+- `usePongGame.js`：新增 `playMode = ref('manual')` 与 `setPlayMode()`，
+  引擎失败时返回 `null` 则不更新 UI（与 `setAiLevel` 同构）。
+  `App.vue` 把 `playMode` 作为属性传给 `AppHeader` 与 `TouchControls`，
+  并按模式切换页脚文案与舞台 `aria-label`；`state` 的十个字段不变。
+- `guide.js`：`GUIDE_SECTIONS` 新增「玩法模式」一节，写清两种模式、数字键、
+  四个动作、自动追球与「动作只作用下一拍」；`GuideSections.vue` **不改**
+  （现有 section 渲染 + `ai` slot 机制足够）。
+
+### §7 「不干扰既有玩法」与验证交付
+
+- **静态**：`npm test`（≥367 且新增用例全绿）、`npm run build` 退出码 0、
+  5 张 PNG 不变、全部源文件 ≤200 行、禁用模式扫描（新依赖 / `/tmp` 持久化 /
+  硬编码凭据 / 远程 URL）0 命中。
+- **纯逻辑单测**：新增 `autoPaddle.test.js`、`strokes.test.js`、
+  `playMode.test.js`；扩展 `spin.test.js` / `spinIntegration.test.js` /
+  `pending.test.js` / `tips.test.js` / `rally.test.js`。断言写「应该怎样」而非
+  「现在怎样」，含空值、未知键、原型键、边界数字、负向检查；外部随机注入，
+  不打网络、不共享可变状态。
+- **玩法回归**：`manual` 模式固定种子 `20261117` 与迭代 14 逐位一致；
+  `action` 模式按 §5 验收；既有 AI 三档、计分、停留 1.5s、倒数 3s 不变。
+- **浏览器三视口**（480×360 / 1280×900 / 390×844）：模式开关可见且四态齐全、
+  manual 3 按钮 / action 4 按钮、数字键选中、命中后单槽自动复位、重开保持模式、
+  动作模式拖动不移动球拍、键盘焦点可见、无横向溢出、canvas 非空白、
+  `console.error 0` / failed requests `0`；relay 前缀下入口与资源全部 200。
+- **失败态**：注入 WebGL / 运行时错误时覆盖层与「重试」仍可用，模式开关禁用。
+- **交付**：`.verify-browser/` 仅作单次验证并清理；`proposal.md` / `tasks.md`
+  如实记录实测与偏差（不改阈值凑数）；最后刷新预览。
+
+### §8 明确不做
+
+不新增 npm 依赖、后端 / 函数 / 存储 / 环境变量、生成图片、真实灯光、配色、
+模型或贴图改动；不改既有物理 / AI / 规则常量，不改判罚与计分，不改
+`sessionPayload()` 九字段，不做模式持久化，不新增时机倒数或第二套模拟，
+不重做迭代 6/7 的手感校准。无视觉改动，故本轮不涉及主观视觉评分。
+
+### 实现期校准与验收结论
+
+> §1–§8 的边界、常量与验收阈值**原样保留、不改写、不凑数**；下文如实记录实测与偏差。
+
+**实现路径**：严格采用方案 A，**0 次生图调用、0 张新 PNG、0 个新 npm 依赖、
+0 个环境变量、0 个新增后端 / 函数 / 存储**；`dist/assets/*.png` 仍 5 张。
+新增 6 个产品模块：`autoPaddle.js` / `strokes.js` / `playMode.js`（纯逻辑）、
+`engineFrame.js`（引擎渲染适配）、`PlayModeToggle.vue` / `AppHeader.vue`（Vue）；
+新增 4 个测试文件共 35 条、扩展 9 个既有测试文件。`config.js` 只**新增**
+`CONFIG.autoPaddle` 5 键与 `CONFIG.spin` 3 键，既有全部键与值逐位不动；
+`sessionPayload()` 仍 9 字段；`manual` 仍是默认模式。
+
+**动作模式正式验收**（`playmode.mjs`，固定种子 `20261117`、200 发、每组最多 3000 固定步）：
+
+| 动作 | 玩家漏接 | 命中 y 偏差 | `\|paddle.vx\|` | `\|paddle.vy\|` | 自身 NET/OUT | 最大步数 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `none` | **0** | 0.0053 | 0.2455 | 0.2719 | 0.00% | 2434 |
+| `drive` | **0** | 0.0053 | 0.2508 | 0.2719 | 0.00% | 2442 |
+| `push` | **0** | 0.0053 | 0.2422 | 0.2719 | 0.00% | 2503 |
+| `block` | **0** | 0.0053 | 0.2487 | 0.2719 | 0.50% | 2492 |
+
+全部满足 §5 阈值（漏接 0、y 偏差 ≤0.10、`|vx| ≤ 0.5`、`|vy| ≤ 2.5`、
+`block` 自身 NET/OUT ≤ `none` +5pp）。四种动作均值可测差异：`spin`
+`0 / +0.650 / −0.600 / 0`、回球 `|vz|` `3.451 / 4.687 / 2.692 / 3.446`、
+回球 `|vx|` `0.159 / 0.161 / 0.152 / 0.550` —— 弧线、旋转、线路三组差异
+全部成立（≥3 种）；单场最大 2503 步，无无限相持。`playmode 49 PASS / 0 FAIL`。
+
+**既有玩法逐位不变**：`gameplay.mjs` 固定种子 `20261117` 实测 `13/13 常量、
+AI 首接 187/200 = 0.935、186/200 场有回击、总 1414 拍、场均 7.07 拍`，
+与迭代 14 **逐位相同**；`invariants15.mjs` 对 `CONFIG.ball.*` / `paddle.*` /
+`aiProfiles` / `rules` / `spin` 既有键 / `arena.light` / `ledColor` / `COLORS.*`
+做深度比对，并验证 `sessionPayload` 九字段名不变、模式状态未写 localStorage、
+`restart()` 保留模式、负向断言可捕获改动，**37 PASS / 0 FAIL**。
+
+**偏差记录**：
+
+- **D1（下沉模块名与规格措辞不同）**：§6 写「若超限则新增
+  `engineView.renderFrame(engine, dt)`」；实现为 `src/game/engineFrame.js` 的
+  `tickFrame(engine, dt)`。行为顺序（accumulator 固定步 → `particles.update` →
+  `arena.step` → `trail.update` → `syncMeshes` → `render`）与改前逐位一致，
+  `PongEngine.js` 198 行 ≤200。仅为拆分位置 / 命名差异，无行为差异。
+- **D2（实现期瞄准偏置，对应 §4 / §5 的「见文末 D2」）**：写入规格时的干跑显示
+  8 组 `|paddle.vx|` 全为 0，但正式脚本首轮出现 1 组 `none` 相持突破 3000 步
+  硬上限 —— `predictXAt()` 精确对齐后拍面横向静止，无旋回球形成定周期循环。
+  为在**不改任何既有物理常量、不改阈值、不加随机**的前提下打破对称，
+  `autoTarget()` 叠加由 `followRadius × 0.75` 派生的 ≤0.09 确定性缓慢相位偏置。
+  代价是 `|paddle.vx|` 由预期 0 变为 0.2422–0.2508，仍远低于 §5 的 0.5；
+  `|paddle.vy| 0.2719` 远低于 2.5；y 偏差 0.0053 优于干跑的 ≤0.042；
+  玩家漏接仍为 0。§5 阈值与 §8 边界原样保留，如实记录该实现差异，并新增
+  `autoPaddle.test.js` 一条「任意有限球状态下偏置有界且不越界」断言。
+- **D3（验证脚本自身缺陷，非产品代码）**：`playmode.mjs` 初版按「整场持续生效」
+  断言所选动作，与 §6「下一拍单槽」语义不符，按规格改为消耗式单槽后 2 项
+  失败消失；`regression.mjs` 沿用迭代 13 的 `.guide-group` 数量 5，迭代 15
+  新增「玩法模式」一节后改为 6；`post-restart.mjs` 在 SwiftShader 持续 rAF 下
+  `page.screenshot()` 30s 超时，按 `regression.mjs` 同法先冻结 rAF 并把截图超时
+  提到 60s，重跑 39 PASS / 0 FAIL。迭代 14 清理时删除的浏览器脚本本轮按会话
+  记录重建同口径。以上均为脚本修正，未改产品代码，也未放宽任何验收标准。
+- **D4（不做主观视觉判读）**：§8 明确本轮无视觉改动、不涉及视觉评分，
+  故未调用 `ViewImage`，不声称任何视觉效果结论。
+
+**验证汇总**：`npm test 419/419`（367 既有 + 35 新文件 + 17 扩展用例）、
+`npm run build` 退出码 0、5 张指纹 PNG（three.js 分块 >500kB 为既有非阻断警告）；
+新增 4 个测试文件独立运行 35/35；`src/` 全部 `.js` / `.vue` ≤200 行（最长 200）；
+禁用模式扫描 `Math.random(` / 新增真实灯光 / `scene.environment =` /
+硬编码凭据与远程 URL / `/tmp` **全 0 命中**；依赖仍 `three, vue`，
+devDependencies 仍 `@vitejs/plugin-vue, vite`。
+浏览器三视口 `regression15 129 PASS / 0 FAIL`、`failure15 10 PASS / 0 FAIL`、
+`final-gate 45 PASS / 0 FAIL`；relay 前缀下 `index.html` / `src/main.js` /
+`src/game/playMode.js` / `src/game/autoPaddle.js` /
+`src/components/PlayModeToggle.vue` 全部 200，5 张 PNG 全部 200，
+`console.error 0` / failed requests `0`；预览刷新后新鲜
+`post-restart.mjs 39 PASS / 0 FAIL`。`.verify-browser/` 已清理，
+`git status --short` 无临时产物残留。
+
+---
